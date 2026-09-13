@@ -3,10 +3,9 @@ import type { CollisionGrid } from '@/types';
 
 const GAME_WIDTH = 128;
 const GAME_HEIGHT = 128;
-const SCALE_UP = 3;
 const GRAVITY = 0.12;
-const MOVE_SPEED = 0.5;
-const JUMP_FORCE = -2.2;
+const MOVE_SPEED = 0.55;
+const JUMP_FORCE = -2.4;
 const MAX_FALL = 3.5;
 
 function isSolid(grid: CollisionGrid | null, x: number, y: number): boolean {
@@ -72,6 +71,9 @@ export class GameScene extends Phaser.Scene {
   private onPosUpdate: ((pos: { x: number; y: number }) => void) | null = null;
   private walkAnim: Phaser.Time.TimerEvent | null = null;
   private currentFrame = 0;
+  private leftZone: Phaser.GameObjects.Zone | null = null;
+  private rightZone: Phaser.GameObjects.Zone | null = null;
+  private centerZone: Phaser.GameObjects.Zone | null = null;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -82,33 +84,22 @@ export class GameScene extends Phaser.Scene {
     generateStickmanTexture(this, 'stickman-walk1', 1);
     generateStickmanTexture(this, 'stickman-walk2', 2);
 
-    this.cameras.main.setBackgroundColor('#f7f3e8');
+    // Transparent so we can optionally show camera under; solid paper for readability
+    this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.92)');
 
     this.gridTexture = this.textures.createCanvas('gridOverlay', GAME_WIDTH, GAME_HEIGHT);
     if (this.gridTexture) {
       this.gridOverlay = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'gridOverlay');
-      this.gridOverlay.setAlpha(0.5);
+      this.gridOverlay.setAlpha(0.85);
+      this.gridOverlay.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     }
 
     this.stickmanSprite = this.add.image(0, 0, 'stickman-idle');
+    this.stickmanSprite.setDisplaySize(10, 12);
     this.stickman = this.add.container(64, 20, [this.stickmanSprite]);
     this.stickman.setDepth(10);
 
-    const leftZone = this.add.zone(0, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    leftZone.setInteractive();
-    leftZone.on('pointerdown', () => { this.inputLeft = true; });
-    leftZone.on('pointerup', () => { this.inputLeft = false; });
-    leftZone.on('pointerout', () => { this.inputLeft = false; });
-
-    const rightZone = this.add.zone(GAME_WIDTH * 2 / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    rightZone.setInteractive();
-    rightZone.on('pointerdown', () => { this.inputRight = true; });
-    rightZone.on('pointerup', () => { this.inputRight = false; });
-    rightZone.on('pointerout', () => { this.inputRight = false; });
-
-    const centerZone = this.add.zone(GAME_WIDTH / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    centerZone.setInteractive();
-    centerZone.on('pointerdown', () => { this.inputJump = true; });
+    this.setupInputZones();
 
     this.input.keyboard?.on('keydown-LEFT', () => { this.inputLeft = true; });
     this.input.keyboard?.on('keyup-LEFT', () => { this.inputLeft = false; });
@@ -116,6 +107,32 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keyup-RIGHT', () => { this.inputRight = false; });
     this.input.keyboard?.on('keydown-UP', () => { this.inputJump = true; });
     this.input.keyboard?.on('keydown-SPACE', () => { this.inputJump = true; });
+
+    // Keep camera zoomed to the full 128x128 world
+    this.cameras.main.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
+  }
+
+  private setupInputZones() {
+    this.leftZone?.destroy();
+    this.rightZone?.destroy();
+    this.centerZone?.destroy();
+
+    this.leftZone = this.add.zone(0, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
+    this.leftZone.setInteractive();
+    this.leftZone.on('pointerdown', () => { this.inputLeft = true; });
+    this.leftZone.on('pointerup', () => { this.inputLeft = false; });
+    this.leftZone.on('pointerout', () => { this.inputLeft = false; });
+
+    this.rightZone = this.add.zone((GAME_WIDTH * 2) / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
+    this.rightZone.setInteractive();
+    this.rightZone.on('pointerdown', () => { this.inputRight = true; });
+    this.rightZone.on('pointerup', () => { this.inputRight = false; });
+    this.rightZone.on('pointerout', () => { this.inputRight = false; });
+
+    this.centerZone = this.add.zone(GAME_WIDTH / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
+    this.centerZone.setInteractive();
+    this.centerZone.on('pointerdown', () => { this.inputJump = true; });
   }
 
   setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement) {
@@ -128,6 +145,11 @@ export class GameScene extends Phaser.Scene {
       this.gridTexture.refresh();
     }
 
+    if (this.gridOverlay) {
+      this.gridOverlay.setVisible(true);
+      this.gridOverlay.setAlpha(0.9);
+    }
+
     this.spawnStickman();
   }
 
@@ -137,9 +159,10 @@ export class GameScene extends Phaser.Scene {
     const cx = Math.floor(this.collisionGrid.width / 2);
     let spawnY = 10;
 
+    // Find first solid platform from top in center column
     for (let y = 0; y < this.collisionGrid.height; y++) {
       if (isSolid(this.collisionGrid, cx, y)) {
-        spawnY = Math.max(0, y - 14);
+        spawnY = Math.max(2, y - 8);
         break;
       }
     }
@@ -148,6 +171,7 @@ export class GameScene extends Phaser.Scene {
     this.stickman.y = spawnY;
     this.vx = 0;
     this.vy = 0;
+    this.grounded = false;
   }
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
@@ -157,8 +181,8 @@ export class GameScene extends Phaser.Scene {
   update() {
     if (!this.stickman || !this.collisionGrid) return;
 
-    const charWidth = 8;
-    const charHeight = 14;
+    const charWidth = 6;
+    const charHeight = 10;
 
     let targetVx = 0;
     if (this.inputLeft) targetVx = -MOVE_SPEED;
@@ -194,14 +218,16 @@ export class GameScene extends Phaser.Scene {
       this.vy = 0;
     }
 
-    this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, GAME_WIDTH - 4);
-    this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, GAME_HEIGHT - 4);
+    this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 3, GAME_WIDTH - 3);
+    this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 3, GAME_HEIGHT - 3);
 
     if (this.grounded && (this.inputLeft || this.inputRight)) {
       if (!this.walkAnim) {
-        this.currentFrame = this.currentFrame === 0 ? 1 : (this.currentFrame === 1 ? 2 : 1);
+        this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
         this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
-        this.walkAnim = this.time.delayedCall(120, () => { this.walkAnim = null; });
+        this.walkAnim = this.time.delayedCall(120, () => {
+          this.walkAnim = null;
+        });
       }
     } else {
       this.stickmanSprite?.setTexture('stickman-idle');
@@ -227,9 +253,13 @@ export class GameScene extends Phaser.Scene {
     const bottom = y + h / 2;
 
     const checkPoints = [
-      [left, bottom], [right, bottom], [x, bottom],
-      [left, top], [right, top],
-      [left, y], [right, y],
+      [left, bottom],
+      [right, bottom],
+      [x, bottom],
+      [left, top],
+      [right, top],
+      [left, y],
+      [right, y],
     ];
 
     for (const [px, py] of checkPoints) {
@@ -261,15 +291,18 @@ export class PhaserGameManager {
     return new Promise((resolve) => {
       this.scene = new GameScene();
 
+      // Fill the parent container completely; world stays 128x128 and is scaled up
       this.game = new Phaser.Game({
         type: Phaser.AUTO,
         parent: this.container,
-        width: GAME_WIDTH * SCALE_UP,
-        height: GAME_HEIGHT * SCALE_UP,
+        width: GAME_WIDTH,
+        height: GAME_HEIGHT,
         backgroundColor: '#f7f3e8',
         scale: {
-          mode: Phaser.Scale.FIT,
+          mode: Phaser.Scale.ENVELOP,
           autoCenter: Phaser.Scale.CENTER_BOTH,
+          width: GAME_WIDTH,
+          height: GAME_HEIGHT,
         },
         scene: [this.scene],
         render: {
@@ -280,9 +313,16 @@ export class PhaserGameManager {
           target: 60,
           min: 30,
         },
+        input: {
+          activePointers: 3,
+        },
       });
 
-      this.game.events.once(Phaser.Core.Events.READY, () => resolve());
+      this.game.events.once(Phaser.Core.Events.READY, () => {
+        // Force a resize so the canvas matches the container on first paint
+        this.game?.scale.refresh();
+        resolve();
+      });
     });
   }
 
@@ -306,6 +346,7 @@ export class PhaserGameManager {
     if (this.game) {
       this.game.destroy(true);
       this.game = null;
+      this.scene = null;
     }
   }
 }
