@@ -7,6 +7,8 @@ import { SpriteAnimator } from '@/components/SpriteAnimator';
 import { DebugPanel } from '@/components/DebugPanel';
 import type { TabId, DebugInfo, CollisionGrid, LevelConfig } from '@/types';
 
+const STORAGE_KEY = 'sketchbook-ar-session-v1';
+
 const DEFAULT_DEBUG: DebugInfo = {
   fps: 0,
   trackingState: 'idle',
@@ -22,29 +24,112 @@ const DEFAULT_LEVEL: LevelConfig = {
   goal: null,
 };
 
+interface SavedSession {
+  captureDataUrl: string | null;
+  threshold: number;
+  levelConfig: LevelConfig;
+  gridPreviewUrl: string | null;
+}
+
+function loadSession(): Partial<SavedSession> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as SavedSession;
+  } catch {
+    return {};
+  }
+}
+
+function saveSession(data: SavedSession) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // quota or private mode — ignore
+  }
+}
+
 export default function App() {
+  const saved = loadSession();
+
   const [activeTab, setActiveTab] = useState<TabId>('play');
-  const [threshold, setThreshold] = useState(120);
-  const [debugInfo, setDebugInfo] = useState<DebugInfo>(DEFAULT_DEBUG);
+  const [threshold, setThreshold] = useState(saved.threshold ?? 120);
+  const [debugInfo, setDebugInfo] = useState<DebugInfo>({
+    ...DEFAULT_DEBUG,
+    threshold: saved.threshold ?? 120,
+  });
   const [grid, setGrid] = useState<CollisionGrid | null>(null);
-  const [gridPreviewUrl, setGridPreviewUrl] = useState<string | null>(null);
-  const [levelConfig, setLevelConfig] = useState<LevelConfig>(DEFAULT_LEVEL);
-  const [showIntro, setShowIntro] = useState(true);
+  const [gridPreviewUrl, setGridPreviewUrl] = useState<string | null>(saved.gridPreviewUrl ?? null);
+  const [levelConfig, setLevelConfig] = useState<LevelConfig>(saved.levelConfig ?? DEFAULT_LEVEL);
+  const [captureDataUrl, setCaptureDataUrl] = useState<string | null>(saved.captureDataUrl ?? null);
+  const [showIntro, setShowIntro] = useState(!saved.captureDataUrl);
 
   const handleDebugUpdate = useCallback((partial: Partial<DebugInfo>) => {
     setDebugInfo((prev) => ({ ...prev, ...partial }));
   }, []);
 
-  const handleGridReady = useCallback((newGrid: CollisionGrid | null, previewUrl: string | null) => {
-    setGrid(newGrid);
-    setGridPreviewUrl(previewUrl);
-  }, []);
+  const handleGridReady = useCallback(
+    (newGrid: CollisionGrid | null, previewUrl: string | null, captureUrl?: string | null) => {
+      setGrid(newGrid);
+      setGridPreviewUrl(previewUrl);
 
-  const handleThresholdChange = useCallback((value: number) => {
-    setThreshold(value);
-    setLevelConfig((prev) => ({ ...prev, threshold: value }));
-    handleDebugUpdate({ threshold: value });
-  }, [handleDebugUpdate]);
+      if (captureUrl !== undefined) {
+        setCaptureDataUrl(captureUrl);
+      }
+
+      // Persist whenever we have a capture
+      const nextCapture = captureUrl !== undefined ? captureUrl : captureDataUrl;
+      if (nextCapture || previewUrl) {
+        saveSession({
+          captureDataUrl: nextCapture,
+          threshold,
+          levelConfig,
+          gridPreviewUrl: previewUrl,
+        });
+      } else if (newGrid === null) {
+        // Cleared (retake)
+        saveSession({
+          captureDataUrl: null,
+          threshold,
+          levelConfig,
+          gridPreviewUrl: null,
+        });
+        setCaptureDataUrl(null);
+      }
+    },
+    [captureDataUrl, threshold, levelConfig]
+  );
+
+  const handleThresholdChange = useCallback(
+    (value: number) => {
+      setThreshold(value);
+      setLevelConfig((prev) => {
+        const next = { ...prev, threshold: value };
+        saveSession({
+          captureDataUrl,
+          threshold: value,
+          levelConfig: next,
+          gridPreviewUrl,
+        });
+        return next;
+      });
+      handleDebugUpdate({ threshold: value });
+    },
+    [handleDebugUpdate, captureDataUrl, gridPreviewUrl]
+  );
+
+  const handleLevelConfigChange = useCallback(
+    (config: LevelConfig) => {
+      setLevelConfig(config);
+      saveSession({
+        captureDataUrl,
+        threshold,
+        levelConfig: config,
+        gridPreviewUrl,
+      });
+    },
+    [captureDataUrl, threshold, gridPreviewUrl]
+  );
 
   useEffect(() => {
     if (grid) {
@@ -63,57 +148,63 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {gridPreviewUrl && (
+            <span className="text-[10px] font-hand text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+              Map saved
+            </span>
+          )}
           <span className="text-[10px] font-hand text-ink-500">Phase 1</span>
           <div className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse-soft" />
         </div>
       </header>
 
-      {showIntro && (
-        <IntroOverlay onClose={() => setShowIntro(false)} />
-      )}
+      {showIntro && <IntroOverlay onClose={() => setShowIntro(false)} />}
 
       <main className="flex-1 relative overflow-hidden">
-        {activeTab === 'play' && (
-          <div className="absolute inset-0 flex">
-            <div className="flex-1 relative">
-              <CameraARView
-                threshold={threshold}
-                levelConfig={levelConfig}
-                onDebugUpdate={handleDebugUpdate}
-                onGridReady={handleGridReady}
-                onThresholdChange={handleThresholdChange}
-              />
-            </div>
-            <div className="w-72 hidden lg:block overflow-y-auto no-scrollbar p-3 paper-bg-margin">
-              <DebugPanel
-                info={debugInfo}
-                threshold={threshold}
-                onThresholdChange={handleThresholdChange}
-              />
-              <div className="mt-3 p-3 bg-paper-300/60 border-2 border-ink-800/20 rounded-lg">
-                <h4 className="font-hand font-bold text-sm text-ink-800 mb-1">How to Play</h4>
-                <ol className="text-xs font-hand text-ink-600 space-y-1 list-decimal list-inside">
-                  <li>Draw lines on paper with dark pencil/marker</li>
-                  <li>Point camera at paper & tap "Capture Paper"</li>
-                  <li>Adjust threshold to isolate your ink strokes</li>
-                  <li>Tap screen sides to walk, center to jump</li>
-                </ol>
-              </div>
+        {/* Keep all views mounted so map / Phaser state survives tab switches */}
+        <div className={`absolute inset-0 flex ${activeTab === 'play' ? '' : 'invisible pointer-events-none'}`} aria-hidden={activeTab !== 'play'}>
+          <div className="flex-1 relative">
+            <CameraARView
+              threshold={threshold}
+              levelConfig={levelConfig}
+              onDebugUpdate={handleDebugUpdate}
+              onGridReady={handleGridReady}
+              onThresholdChange={handleThresholdChange}
+              savedCaptureDataUrl={captureDataUrl}
+            />
+          </div>
+          <div className="w-72 hidden lg:block overflow-y-auto no-scrollbar p-3 paper-bg-margin">
+            <DebugPanel
+              info={debugInfo}
+              threshold={threshold}
+              onThresholdChange={handleThresholdChange}
+            />
+            <div className="mt-3 p-3 bg-paper-300/60 border-2 border-ink-800/20 rounded-lg">
+              <h4 className="font-hand font-bold text-sm text-ink-800 mb-1">How to Play</h4>
+              <ol className="text-xs font-hand text-ink-600 space-y-1 list-decimal list-inside">
+                <li>Draw lines on paper with dark pencil/marker</li>
+                <li>Point camera at paper & tap "Capture Paper"</li>
+                <li>Adjust threshold to isolate your ink strokes</li>
+                <li>Tap screen sides to walk, center to jump</li>
+              </ol>
+              <p className="text-[10px] font-hand text-ink-500 mt-2">
+                Map stays when you switch tabs. Only Retake or a new capture replaces it.
+              </p>
             </div>
           </div>
-        )}
+        </div>
 
-        {activeTab === 'setup' && (
+        <div className={`absolute inset-0 ${activeTab === 'setup' ? '' : 'invisible pointer-events-none'}`} aria-hidden={activeTab !== 'setup'}>
           <LevelEditor
             config={levelConfig}
-            onConfigChange={setLevelConfig}
+            onConfigChange={handleLevelConfigChange}
             gridPreview={gridPreviewUrl}
           />
-        )}
+        </div>
 
-        {activeTab === 'animator' && (
+        <div className={`absolute inset-0 ${activeTab === 'animator' ? '' : 'invisible pointer-events-none'}`} aria-hidden={activeTab !== 'animator'}>
           <SpriteAnimator />
-        )}
+        </div>
       </main>
 
       <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
