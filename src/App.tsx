@@ -22,6 +22,7 @@ const DEFAULT_LEVEL: LevelConfig = {
   threshold: 120,
   hazards: [],
   goal: null,
+  spawn: null,
 };
 
 interface SavedSession {
@@ -60,7 +61,12 @@ export default function App() {
   });
   const [grid, setGrid] = useState<CollisionGrid | null>(null);
   const [gridPreviewUrl, setGridPreviewUrl] = useState<string | null>(saved.gridPreviewUrl ?? null);
-  const [levelConfig, setLevelConfig] = useState<LevelConfig>(saved.levelConfig ?? DEFAULT_LEVEL);
+  const [levelConfig, setLevelConfig] = useState<LevelConfig>({
+    ...DEFAULT_LEVEL,
+    ...(saved.levelConfig ?? {}),
+    spawn: saved.levelConfig?.spawn ?? null,
+    goal: saved.levelConfig?.goal ?? null,
+  });
   const [captureDataUrl, setCaptureDataUrl] = useState<string | null>(saved.captureDataUrl ?? null);
   const [showIntro, setShowIntro] = useState(!saved.captureDataUrl);
 
@@ -77,7 +83,6 @@ export default function App() {
         setCaptureDataUrl(captureUrl);
       }
 
-      // Persist whenever we have a capture
       const nextCapture = captureUrl !== undefined ? captureUrl : captureDataUrl;
       if (nextCapture || previewUrl) {
         saveSession({
@@ -87,7 +92,6 @@ export default function App() {
           gridPreviewUrl: previewUrl,
         });
       } else if (newGrid === null) {
-        // Cleared (retake)
         saveSession({
           captureDataUrl: null,
           threshold,
@@ -161,7 +165,6 @@ export default function App() {
       {showIntro && <IntroOverlay onClose={() => setShowIntro(false)} />}
 
       <main className="flex-1 relative overflow-hidden">
-        {/* Keep all views mounted so map / Phaser state survives tab switches */}
         <div className={`absolute inset-0 flex ${activeTab === 'play' ? '' : 'invisible pointer-events-none'}`} aria-hidden={activeTab !== 'play'}>
           <div className="flex-1 relative">
             <CameraARView
