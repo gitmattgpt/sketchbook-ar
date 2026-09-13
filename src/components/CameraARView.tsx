@@ -1,7 +1,15 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { Camera, RefreshCw, Play, Loader2, Bug, CheckCircle2, XCircle, SlidersHorizontal } from 'lucide-react';
 import type { CollisionGrid, TrackingState, DebugInfo, LevelConfig } from '@/types';
-import { downsampleToGrid, extractCollisionGrid, countSolidPixels } from '@/utils/imageProcessor';
+import {
+  downsampleToLetter,
+  extractCollisionGrid,
+  countSolidPixels,
+  GRID_WIDTH,
+  GRID_HEIGHT,
+  CAPTURE_WIDTH,
+  CAPTURE_HEIGHT,
+} from '@/utils/imageProcessor';
 import { PhaserGameManager } from '@/game/PhaserGameManager';
 
 interface CameraARViewProps {
@@ -24,6 +32,7 @@ export function CameraARView({
   const phaserRef = useRef<PhaserGameManager | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isFirstProcessRef = useRef(true);
   const fpsRef = useRef<{ frames: number; lastTime: number }>({ frames: 0, lastTime: performance.now() });
   const [trackingState, setTrackingState] = useState<TrackingState>('idle');
   const [showDebug, setShowDebug] = useState(false);
@@ -39,8 +48,8 @@ export function CameraARView({
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 1280 },
+          width: { ideal: 1920 },
+          height: { ideal: 1920 },
         },
         audio: false,
       });
@@ -95,13 +104,13 @@ export function CameraARView({
   }, [onDebugUpdate]);
 
   const processCanvas = useCallback(
-    async (sourceCanvas: HTMLCanvasElement, thresh: number) => {
-      const downsampled = downsampleToGrid(sourceCanvas, 128);
-      const result = extractCollisionGrid(downsampled, thresh);
+    async (sourceCanvas: HTMLCanvasElement, thresh: number, forceRespawn: boolean) => {
+      const downsampled = downsampleToLetter(sourceCanvas, GRID_WIDTH, GRID_HEIGHT);
+      const result = extractCollisionGrid(downsampled, thresh, GRID_WIDTH, GRID_HEIGHT);
       const solidCount = countSolidPixels(result.grid);
 
       onDebugUpdate({
-        gridResolution: '128×128',
+        gridResolution: `${GRID_WIDTH}×${GRID_HEIGHT}`,
         solidPixels: solidCount,
         threshold: thresh,
       });
@@ -109,7 +118,7 @@ export function CameraARView({
       onGridReady(result.grid, result.previewCanvas.toDataURL());
 
       const manager = await ensurePhaser();
-      manager?.setCollisionGrid(result.grid, result.gridCanvas);
+      manager?.setCollisionGrid(result.grid, result.gridCanvas, forceRespawn);
 
       setHasGrid(true);
       setTrackingState('tracking');
@@ -127,18 +136,34 @@ export function CameraARView({
       const video = videoRef.current;
       const vw = video.videoWidth;
       const vh = video.videoHeight;
-      const minDim = Math.min(vw, vh);
-      const offX = (vw - minDim) / 2;
-      const offY = (vh - minDim) / 2;
+
+      // Center-crop to letter aspect 8.5:11
+      const targetAspect = CAPTURE_WIDTH / CAPTURE_HEIGHT;
+      const srcAspect = vw / vh;
+      let cropW: number, cropH: number, offX: number, offY: number;
+
+      if (srcAspect > targetAspect) {
+        cropH = vh;
+        cropW = vh * targetAspect;
+        offX = (vw - cropW) / 2;
+        offY = 0;
+      } else {
+        cropW = vw;
+        cropH = vw / targetAspect;
+        offX = 0;
+        offY = (vh - cropH) / 2;
+      }
 
       const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 512;
+      canvas.width = CAPTURE_WIDTH;
+      canvas.height = CAPTURE_HEIGHT;
       const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(video, offX, offY, minDim, minDim, 0, 0, 512, 512);
+      ctx.drawImage(video, offX, offY, cropW, cropH, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
 
       lastCaptureCanvasRef.current = canvas;
-      await processCanvas(canvas, threshold);
+      isFirstProcessRef.current = true;
+      await processCanvas(canvas, threshold, true);
+      isFirstProcessRef.current = false;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Capture failed';
       setError(msg);
@@ -147,10 +172,10 @@ export function CameraARView({
     }
   }, [threshold, processCanvas]);
 
-  // Re-process when threshold changes after a capture (debounced feel via direct call)
+  // Re-process on threshold change — keep character position
   useEffect(() => {
-    if (hasGrid && lastCaptureCanvasRef.current) {
-      processCanvas(lastCaptureCanvasRef.current, threshold);
+    if (hasGrid && lastCaptureCanvasRef.current && !isFirstProcessRef.current) {
+      processCanvas(lastCaptureCanvasRef.current, threshold, false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threshold]);
@@ -167,6 +192,7 @@ export function CameraARView({
     setShowThreshold(false);
     setTrackingState('searching');
     lastCaptureCanvasRef.current = null;
+    isFirstProcessRef.current = true;
     onGridReady(null, null);
     onDebugUpdate({ gridResolution: '—', solidPixels: 0, characterPos: null });
   }, [onDebugUpdate, onGridReady]);
@@ -205,7 +231,6 @@ export function CameraARView({
   return (
     <div className="flex flex-col h-full bg-ink-900 relative overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
-        {/* Camera always present; dimmed when playing */}
         <video
           ref={videoRef}
           playsInline
@@ -216,13 +241,24 @@ export function CameraARView({
           }`}
         />
 
+        {/* Letter-size (8.5×11) capture guide */}
         {!hasGrid && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-64 h-64 sm:w-72 sm:h-72 border-2 border-dashed border-paper-100/50 rounded-2xl" />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-6 py-8">
+            <div
+              className="relative border-2 border-dashed border-paper-100/60 rounded-sm max-h-full"
+              style={{
+                aspectRatio: '8.5 / 11',
+                width: 'min(78vw, 340px)',
+                maxHeight: '70%',
+              }}
+            >
+              <span className="absolute -bottom-6 left-0 right-0 text-center text-[10px] font-hand text-paper-100/70">
+                Align letter paper (8.5×11) inside frame
+              </span>
+            </div>
           </div>
         )}
 
-        {/* Game canvas — always in DOM so ref is valid; fills entire area when active */}
         <div
           ref={gameContainerRef}
           className={`absolute inset-0 z-[5] ${
@@ -277,7 +313,7 @@ export function CameraARView({
               </div>
               <div className="flex justify-between text-ink-700">
                 <span>Grid:</span>
-                <span className="font-bold">{hasGrid ? '128×128' : '—'}</span>
+                <span className="font-bold">{hasGrid ? `${GRID_WIDTH}×${GRID_HEIGHT}` : '—'}</span>
               </div>
             </div>
           </div>
