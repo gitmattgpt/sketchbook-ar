@@ -81,6 +81,7 @@ export default function App() {
                 levelConfig={levelConfig}
                 onDebugUpdate={handleDebugUpdate}
                 onGridReady={handleGridReady}
+                onThresholdChange={handleThresholdChange}
               />
             </div>
             <div className="w-72 hidden lg:block overflow-y-auto no-scrollbar p-3 paper-bg-margin">
