@@ -73,12 +73,29 @@ export function CameraARView({
 
   useEffect(() => {
     startCamera();
-    return () => stopCamera();
+    return () => {
+      stopCamera();
+      if (phaserRef.current) {
+        phaserRef.current.destroy();
+        phaserRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const ensurePhaser = useCallback(async () => {
+    if (phaserRef.current || !gameContainerRef.current) return phaserRef.current;
+    const manager = new PhaserGameManager(gameContainerRef.current);
+    await manager.init();
+    manager.setOnPositionUpdate((pos) => {
+      onDebugUpdate({ characterPos: pos });
+    });
+    phaserRef.current = manager;
+    return manager;
+  }, [onDebugUpdate]);
+
   const processCanvas = useCallback(
-    (sourceCanvas: HTMLCanvasElement, thresh: number) => {
+    async (sourceCanvas: HTMLCanvasElement, thresh: number) => {
       const downsampled = downsampleToGrid(sourceCanvas, 128);
       const result = extractCollisionGrid(downsampled, thresh);
       const solidCount = countSolidPixels(result.grid);
@@ -91,23 +108,13 @@ export function CameraARView({
 
       onGridReady(result.grid, result.previewCanvas.toDataURL());
 
-      if (phaserRef.current) {
-        phaserRef.current.setCollisionGrid(result.grid, result.gridCanvas);
-      } else if (gameContainerRef.current) {
-        const manager = new PhaserGameManager(gameContainerRef.current);
-        manager.init().then(() => {
-          manager.setCollisionGrid(result.grid, result.gridCanvas);
-          manager.setOnPositionUpdate((pos) => {
-            onDebugUpdate({ characterPos: pos });
-          });
-          phaserRef.current = manager;
-        });
-      }
+      const manager = await ensurePhaser();
+      manager?.setCollisionGrid(result.grid, result.gridCanvas);
 
       setHasGrid(true);
       setTrackingState('tracking');
     },
-    [onDebugUpdate, onGridReady]
+    [onDebugUpdate, onGridReady, ensurePhaser]
   );
 
   const capturePhoto = useCallback(async () => {
@@ -131,7 +138,7 @@ export function CameraARView({
       ctx.drawImage(video, offX, offY, minDim, minDim, 0, 0, 512, 512);
 
       lastCaptureCanvasRef.current = canvas;
-      processCanvas(canvas, threshold);
+      await processCanvas(canvas, threshold);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Capture failed';
       setError(msg);
@@ -140,7 +147,7 @@ export function CameraARView({
     }
   }, [threshold, processCanvas]);
 
-  // Re-process when threshold changes after a capture
+  // Re-process when threshold changes after a capture (debounced feel via direct call)
   useEffect(() => {
     if (hasGrid && lastCaptureCanvasRef.current) {
       processCanvas(lastCaptureCanvasRef.current, threshold);
@@ -149,6 +156,13 @@ export function CameraARView({
   }, [threshold]);
 
   const retakePhoto = useCallback(() => {
+    if (phaserRef.current) {
+      phaserRef.current.destroy();
+      phaserRef.current = null;
+    }
+    if (gameContainerRef.current) {
+      gameContainerRef.current.innerHTML = '';
+    }
     setHasGrid(false);
     setShowThreshold(false);
     setTrackingState('searching');
@@ -181,15 +195,6 @@ export function CameraARView({
     return () => cancelAnimationFrame(rafId);
   }, [cameraReady, trackingState, onDebugUpdate]);
 
-  useEffect(() => {
-    return () => {
-      if (phaserRef.current) {
-        phaserRef.current.destroy();
-        phaserRef.current = null;
-      }
-    };
-  }, []);
-
   const trackingBadge = {
     idle: { text: 'Idle', icon: XCircle, color: 'bg-ink-500/80' },
     searching: { text: 'Searching…', icon: Loader2, color: 'bg-amber-600/80' },
@@ -200,12 +205,15 @@ export function CameraARView({
   return (
     <div className="flex flex-col h-full bg-ink-900 relative overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
+        {/* Camera always present; dimmed when playing */}
         <video
           ref={videoRef}
           playsInline
           muted
           autoPlay
-          className="absolute inset-0 w-full h-full object-cover"
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+            hasGrid ? 'opacity-20' : 'opacity-100'
+          }`}
         />
 
         {!hasGrid && (
@@ -214,14 +222,16 @@ export function CameraARView({
           </div>
         )}
 
-        {hasGrid && (
-          <div
-            ref={gameContainerRef}
-            className="absolute inset-0 flex items-center justify-center pointer-events-auto"
-          />
-        )}
+        {/* Game canvas — always in DOM so ref is valid; fills entire area when active */}
+        <div
+          ref={gameContainerRef}
+          className={`absolute inset-0 z-[5] ${
+            hasGrid ? 'block' : 'hidden'
+          }`}
+          style={{ width: '100%', height: '100%' }}
+        />
 
-        <div className="absolute top-3 left-3 right-3 flex items-center justify-between safe-top">
+        <div className="absolute top-3 left-3 right-3 flex items-center justify-between safe-top z-10">
           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-paper-100 text-xs font-hand font-bold ${trackingBadge.color}`}>
             <trackingBadge.icon size={14} className={trackingState === 'searching' ? 'animate-spin' : ''} />
             {trackingBadge.text}
@@ -251,7 +261,7 @@ export function CameraARView({
         </div>
 
         {showDebug && (
-          <div className="absolute top-14 left-3 right-3 max-w-xs animate-fade-in z-10">
+          <div className="absolute top-14 left-3 right-3 max-w-xs animate-fade-in z-20">
             <div className="bg-paper-300/70 backdrop-blur-md border-2 border-ink-800/20 rounded-lg p-3 space-y-2 text-xs font-hand">
               <div className="flex justify-between text-ink-700">
                 <span>Camera:</span>
@@ -311,7 +321,7 @@ export function CameraARView({
         )}
 
         {!cameraReady && !error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-ink-900">
+          <div className="absolute inset-0 flex items-center justify-center bg-ink-900 z-30">
             <div className="text-center space-y-3">
               <Loader2 size={32} className="text-paper-100/60 animate-spin mx-auto" />
               <p className="text-paper-100/60 font-hand text-sm">Starting camera…</p>
@@ -320,7 +330,7 @@ export function CameraARView({
         )}
       </div>
 
-      <div className="bg-ink-900 safe-bottom px-4 py-3 flex flex-col gap-2">
+      <div className="bg-ink-900 safe-bottom px-4 py-3 flex flex-col gap-2 z-10">
         {hasGrid && !showThreshold && (
           <div className="flex items-center gap-3 px-1">
             <SlidersHorizontal size={14} className="text-paper-100/70 shrink-0" />
