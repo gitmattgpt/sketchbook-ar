@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sketchbook AR — Printable Template</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Caveat:wght@700&display=swap');
+  body { margin: 0; background: #f7f3e8; font-family: 'Kalam', sans-serif; color: #2b2b2b; }
+  .page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 40px 60px;
+    background: #f7f3e8;
+    background-image:
+      linear-gradient(to right, rgba(220,80,80,0.2) 2px, transparent 2px),
+      linear-gradient(rgba(120,160,200,0.2) 1px, transparent 1px);
+    background-size: 60px 100%, 100% 32px;
+    background-position: 0 0, 0 0;
+  }
+  h1 { font-family: 'Caveat', cursive; font-size: 36px; margin: 0 0 8px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 32px 0 8px; }
+  p { font-size: 14px; line-height: 1.6; margin: 0 0 8px; }
+  .draw-box {
+    border: 3px dashed #2b2b2b;
+    border-radius: 12px;
+    margin: 20px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    background: rgba(255,255,255,0.3);
+  }
+  .draw-box p { font-size: 12px; color: #6b6b6b; }
+  .instructions { list-style: decimal; padding-left: 20px; font-size: 14px; line-height: 1.8; }
+  .tip { background: rgba(120,160,200,0.15); border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 13px; }
+  @media print { .no-print { display: none; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Sketchbook AR — Draw Your World</h1>
+  <p>Print this page, draw on it with dark pencil or marker, then point your phone camera at it.</p>
+
+  <div class="tip no-print">
+    <strong>Tip:</strong> Use a dark pen or thick marker for best tracking results.
+    Avoid shadows — draw in even lighting.
+  </div>
+
+  <h2>Draw Your Level Here</h2>
+  <div class="draw-box">
+    <p>↑ Draw floors, platforms, and walls in this box ↑</p>
+    <p>Dark, thick lines work best for collision detection</p>
+  </div>
+
+  <h2>How It Works</h2>
+  <ol class="instructions">
+    <li>Draw dark lines on the template above (floors, walls, platforms)</li>
+    <li>Open Sketchbook AR on your phone</li>
+    <li>Point the camera at your drawing</li>
+    <li>Tap "Capture Paper" to scan your level</li>
+    <li>Adjust the threshold slider until only your lines are visible</li>
+    <li>Tap left/right sides of screen to walk, center to jump</li>
+  </ol>
+
+  <h2>Drawing Tips</h2>
+  <ul class="instructions">
+    <li>Draw continuous horizontal lines for stable floors</li>
+    <li>Leave gaps for jumps — but not too wide!</li>
+    <li>Walls should be tall and thick (vertical lines)</li>
+    <li>Avoid thin, light pencil — it may not register</li>
+    <li>Keep drawings within the dashed box above</li>
+  </ul>
+</div>
+</body>
+</html>
