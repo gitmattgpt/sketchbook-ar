@@ -76,6 +76,8 @@ export class GameScene extends Phaser.Scene {
   private rightZone: Phaser.GameObjects.Zone | null = null;
   private centerZone: Phaser.GameObjects.Zone | null = null;
   private hasSpawned = false;
+  private customWalkKeys: string[] = [];
+  private useCustomWalk = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -86,6 +88,8 @@ export class GameScene extends Phaser.Scene {
     generateStickmanTexture(this, 'stickman-walk1', 1);
     generateStickmanTexture(this, 'stickman-walk2', 2);
 
+    this.loadCustomWalkFromStorage();
+
     this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.94)');
 
     this.gridTexture = this.textures.createCanvas('gridOverlay', GAME_WIDTH, GAME_HEIGHT);
@@ -95,8 +99,9 @@ export class GameScene extends Phaser.Scene {
       this.gridOverlay.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     }
 
-    this.stickmanSprite = this.add.image(0, 0, 'stickman-idle');
-    this.stickmanSprite.setDisplaySize(12, 14);
+    const startKey = this.useCustomWalk && this.customWalkKeys[0] ? this.customWalkKeys[0] : 'stickman-idle';
+    this.stickmanSprite = this.add.image(0, 0, startKey);
+    this.stickmanSprite.setDisplaySize(14, 16);
     this.stickman = this.add.container(GAME_WIDTH / 2, 24, [this.stickmanSprite]);
     this.stickman.setDepth(10);
 
@@ -111,6 +116,35 @@ export class GameScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
     this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
+  }
+
+  private loadCustomWalkFromStorage() {
+    try {
+      const raw = localStorage.getItem('sketchbook-ar-active-walk');
+      if (!raw) return;
+      const urls: string[] = JSON.parse(raw);
+      if (!Array.isArray(urls) || urls.length === 0) return;
+
+      this.customWalkKeys = [];
+      urls.forEach((url, i) => {
+        const key = `custom-walk-${i}`;
+        if (this.textures.exists(key)) this.textures.remove(key);
+        this.textures.addBase64(key, url);
+        this.customWalkKeys.push(key);
+      });
+      this.useCustomWalk = this.customWalkKeys.length > 0;
+    } catch {
+      this.useCustomWalk = false;
+    }
+  }
+
+  /** Call after exporting a new cycle from the Animator */
+  reloadCustomWalk() {
+    this.loadCustomWalkFromStorage();
+    if (this.stickmanSprite && this.useCustomWalk && this.customWalkKeys[0]) {
+      this.stickmanSprite.setTexture(this.customWalkKeys[0]);
+      this.stickmanSprite.setDisplaySize(14, 16);
+    }
   }
 
   private setupInputZones() {
@@ -135,14 +169,9 @@ export class GameScene extends Phaser.Scene {
     this.centerZone.on('pointerdown', () => { this.inputJump = true; });
   }
 
-  /**
-   * Update collision map. Only respawns stickman on first grid or if
-   * current position is no longer valid (e.g. fell off world).
-   */
   setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement, forceRespawn = false) {
     this.collisionGrid = grid;
 
-    // Recreate texture if size changed
     if (this.gridTexture && (this.gridTexture.width !== grid.width || this.gridTexture.height !== grid.height)) {
       this.textures.remove('gridOverlay');
       this.gridTexture = this.textures.createCanvas('gridOverlay', grid.width, grid.height);
@@ -172,7 +201,6 @@ export class GameScene extends Phaser.Scene {
       this.spawnStickman();
       this.hasSpawned = true;
     } else if (this.stickman) {
-      // Keep position; only nudge if completely outside bounds
       this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, grid.width - 4);
       this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, grid.height - 4);
     }
@@ -245,12 +273,19 @@ export class GameScene extends Phaser.Scene {
 
     if (this.grounded && (this.inputLeft || this.inputRight)) {
       if (!this.walkAnim) {
-        this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
-        this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
-        this.walkAnim = this.time.delayedCall(110, () => {
+        if (this.useCustomWalk && this.customWalkKeys.length > 0) {
+          this.currentFrame = (this.currentFrame + 1) % this.customWalkKeys.length;
+          this.stickmanSprite?.setTexture(this.customWalkKeys[this.currentFrame]);
+        } else {
+          this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
+          this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
+        }
+        this.walkAnim = this.time.delayedCall(120, () => {
           this.walkAnim = null;
         });
       }
+    } else if (this.useCustomWalk && this.customWalkKeys[0]) {
+      this.stickmanSprite?.setTexture(this.customWalkKeys[0]);
     } else {
       this.stickmanSprite?.setTexture('stickman-idle');
     }
@@ -356,6 +391,10 @@ export class PhaserGameManager {
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
     this.scene?.setOnPositionUpdate(cb);
+  }
+
+  reloadCustomWalk() {
+    this.scene?.reloadCustomWalk();
   }
 
   getCharacterPos() {
