@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Camera, RefreshCw, Play, Loader2, Bug, CheckCircle2, XCircle } from 'lucide-react';
+import { Camera, RefreshCw, Play, Loader2, Bug, CheckCircle2, XCircle, SlidersHorizontal } from 'lucide-react';
 import type { CollisionGrid, TrackingState, DebugInfo, LevelConfig } from '@/types';
 import { downsampleToGrid, extractCollisionGrid, countSolidPixels } from '@/utils/imageProcessor';
 import { PhaserGameManager } from '@/game/PhaserGameManager';
@@ -9,16 +9,25 @@ interface CameraARViewProps {
   levelConfig: LevelConfig;
   onDebugUpdate: (info: Partial<DebugInfo>) => void;
   onGridReady: (grid: CollisionGrid | null, previewUrl: string | null) => void;
+  onThresholdChange: (value: number) => void;
 }
 
-export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridReady }: CameraARViewProps) {
+export function CameraARView({
+  threshold,
+  levelConfig,
+  onDebugUpdate,
+  onGridReady,
+  onThresholdChange,
+}: CameraARViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const gameContainerRef = useRef<HTMLDivElement>(null);
   const phaserRef = useRef<PhaserGameManager | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const lastCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fpsRef = useRef<{ frames: number; lastTime: number }>({ frames: 0, lastTime: performance.now() });
   const [trackingState, setTrackingState] = useState<TrackingState>('idle');
   const [showDebug, setShowDebug] = useState(false);
+  const [showThreshold, setShowThreshold] = useState(false);
   const [hasGrid, setHasGrid] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +77,39 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const processCanvas = useCallback(
+    (sourceCanvas: HTMLCanvasElement, thresh: number) => {
+      const downsampled = downsampleToGrid(sourceCanvas, 128);
+      const result = extractCollisionGrid(downsampled, thresh);
+      const solidCount = countSolidPixels(result.grid);
+
+      onDebugUpdate({
+        gridResolution: '128×128',
+        solidPixels: solidCount,
+        threshold: thresh,
+      });
+
+      onGridReady(result.grid, result.previewCanvas.toDataURL());
+
+      if (phaserRef.current) {
+        phaserRef.current.setCollisionGrid(result.grid, result.gridCanvas);
+      } else if (gameContainerRef.current) {
+        const manager = new PhaserGameManager(gameContainerRef.current);
+        manager.init().then(() => {
+          manager.setCollisionGrid(result.grid, result.gridCanvas);
+          manager.setOnPositionUpdate((pos) => {
+            onDebugUpdate({ characterPos: pos });
+          });
+          phaserRef.current = manager;
+        });
+      }
+
+      setHasGrid(true);
+      setTrackingState('tracking');
+    },
+    [onDebugUpdate, onGridReady]
+  );
+
   const capturePhoto = useCallback(async () => {
     if (!videoRef.current || !videoRef.current.videoWidth) return;
 
@@ -88,43 +130,29 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(video, offX, offY, minDim, minDim, 0, 0, 512, 512);
 
-      const downsampled = downsampleToGrid(canvas, 128);
-      const result = extractCollisionGrid(downsampled, threshold);
-      const solidCount = countSolidPixels(result.grid);
-
-      onDebugUpdate({
-        gridResolution: '128×128',
-        solidPixels: solidCount,
-        threshold,
-      });
-
-      onGridReady(result.grid, result.previewCanvas.toDataURL());
-
-      if (phaserRef.current) {
-        phaserRef.current.setCollisionGrid(result.grid, result.gridCanvas);
-      } else if (gameContainerRef.current) {
-        const manager = new PhaserGameManager(gameContainerRef.current);
-        await manager.init();
-        manager.setCollisionGrid(result.grid, result.gridCanvas);
-        manager.setOnPositionUpdate((pos) => {
-          onDebugUpdate({ characterPos: pos });
-        });
-        phaserRef.current = manager;
-      }
-
-      setHasGrid(true);
-      setTrackingState('tracking');
+      lastCaptureCanvasRef.current = canvas;
+      processCanvas(canvas, threshold);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Capture failed';
       setError(msg);
     } finally {
       setIsCapturing(false);
     }
-  }, [threshold, onDebugUpdate, onGridReady]);
+  }, [threshold, processCanvas]);
+
+  // Re-process when threshold changes after a capture
+  useEffect(() => {
+    if (hasGrid && lastCaptureCanvasRef.current) {
+      processCanvas(lastCaptureCanvasRef.current, threshold);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threshold]);
 
   const retakePhoto = useCallback(() => {
     setHasGrid(false);
+    setShowThreshold(false);
     setTrackingState('searching');
+    lastCaptureCanvasRef.current = null;
     onGridReady(null, null);
     onDebugUpdate({ gridResolution: '—', solidPixels: 0, characterPos: null });
   }, [onDebugUpdate, onGridReady]);
@@ -186,7 +214,7 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
           </div>
         )}
 
-        {hasGrid && gameContainerRef && (
+        {hasGrid && (
           <div
             ref={gameContainerRef}
             className="absolute inset-0 flex items-center justify-center pointer-events-auto"
@@ -198,16 +226,32 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
             <trackingBadge.icon size={14} className={trackingState === 'searching' ? 'animate-spin' : ''} />
             {trackingBadge.text}
           </div>
-          <button
-            onClick={() => setShowDebug(!showDebug)}
-            className={`p-2 rounded-full transition-colors ${showDebug ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'}`}
-          >
-            <Bug size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {hasGrid && (
+              <button
+                onClick={() => setShowThreshold(!showThreshold)}
+                className={`p-2 rounded-full transition-colors ${
+                  showThreshold ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'
+                }`}
+                aria-label="Toggle threshold"
+              >
+                <SlidersHorizontal size={18} />
+              </button>
+            )}
+            <button
+              onClick={() => setShowDebug(!showDebug)}
+              className={`p-2 rounded-full transition-colors ${
+                showDebug ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'
+              }`}
+              aria-label="Toggle debug"
+            >
+              <Bug size={18} />
+            </button>
+          </div>
         </div>
 
         {showDebug && (
-          <div className="absolute top-14 left-3 right-3 max-w-xs animate-fade-in">
+          <div className="absolute top-14 left-3 right-3 max-w-xs animate-fade-in z-10">
             <div className="bg-paper-300/70 backdrop-blur-md border-2 border-ink-800/20 rounded-lg p-3 space-y-2 text-xs font-hand">
               <div className="flex justify-between text-ink-700">
                 <span>Camera:</span>
@@ -229,8 +273,33 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
           </div>
         )}
 
+        {showThreshold && hasGrid && (
+          <div className="absolute bottom-24 left-3 right-3 z-20 animate-fade-in">
+            <div className="bg-paper-200/95 backdrop-blur-md border-2 border-ink-800/25 rounded-xl p-4 space-y-2 shadow-lg">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-hand font-bold text-ink-800 flex items-center gap-2">
+                  <SlidersHorizontal size={16} />
+                  Threshold
+                </label>
+                <span className="text-sm font-hand font-bold text-ink-700 tabular-nums">{threshold}</span>
+              </div>
+              <input
+                type="range"
+                min={20}
+                max={200}
+                value={threshold}
+                onChange={(e) => onThresholdChange(Number(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-[11px] font-hand text-ink-500 leading-tight">
+                Lower = more platforms · Higher = only darkest lines
+              </p>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-ink-900/80 p-6">
+          <div className="absolute inset-0 flex items-center justify-center bg-ink-900/80 p-6 z-30">
             <div className="text-center space-y-3 max-w-xs">
               <XCircle size={40} className="text-red-400 mx-auto" />
               <p className="text-paper-100 font-hand text-sm">{error}</p>
@@ -251,32 +320,52 @@ export function CameraARView({ threshold, levelConfig, onDebugUpdate, onGridRead
         )}
       </div>
 
-      <div className="bg-ink-900 safe-bottom px-4 py-3 flex items-center justify-center gap-3">
-        {!hasGrid ? (
-          <button
-            onClick={capturePhoto}
-            disabled={!cameraReady || isCapturing}
-            className="btn-sketch flex items-center gap-2 disabled:opacity-40"
-          >
-            {isCapturing ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <Camera size={18} />
-            )}
-            <span>{isCapturing ? 'Processing…' : 'Capture Paper'}</span>
-          </button>
-        ) : (
-          <>
-            <button onClick={retakePhoto} className="btn-sketch-outline flex items-center gap-2 text-paper-100 border-paper-100">
-              <RefreshCw size={18} />
-              <span>Retake</span>
-            </button>
-            <div className="flex items-center gap-1.5 text-paper-100/80 text-xs font-hand">
-              <Play size={14} />
-              <span>Tap left/right to walk, center to jump</span>
-            </div>
-          </>
+      <div className="bg-ink-900 safe-bottom px-4 py-3 flex flex-col gap-2">
+        {hasGrid && !showThreshold && (
+          <div className="flex items-center gap-3 px-1">
+            <SlidersHorizontal size={14} className="text-paper-100/70 shrink-0" />
+            <input
+              type="range"
+              min={20}
+              max={200}
+              value={threshold}
+              onChange={(e) => onThresholdChange(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span className="text-paper-100/80 text-xs font-hand tabular-nums w-8 text-right">{threshold}</span>
+          </div>
         )}
+
+        <div className="flex items-center justify-center gap-3">
+          {!hasGrid ? (
+            <button
+              onClick={capturePhoto}
+              disabled={!cameraReady || isCapturing}
+              className="btn-sketch flex items-center gap-2 disabled:opacity-40"
+            >
+              {isCapturing ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <Camera size={18} />
+              )}
+              <span>{isCapturing ? 'Processing…' : 'Capture Paper'}</span>
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={retakePhoto}
+                className="btn-sketch-outline flex items-center gap-2 text-paper-100 border-paper-100"
+              >
+                <RefreshCw size={18} />
+                <span>Retake</span>
+              </button>
+              <div className="flex items-center gap-1.5 text-paper-100/80 text-xs font-hand">
+                <Play size={14} />
+                <span>Tap sides to walk, center to jump</span>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
