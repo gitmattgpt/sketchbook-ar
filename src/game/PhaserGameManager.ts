@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import type { CollisionGrid } from '@/types';
+import { GRID_WIDTH, GRID_HEIGHT } from '@/utils/imageProcessor';
 
-const GAME_WIDTH = 128;
-const GAME_HEIGHT = 128;
-const GRAVITY = 0.12;
-const MOVE_SPEED = 0.55;
-const JUMP_FORCE = -2.4;
-const MAX_FALL = 3.5;
+const GAME_WIDTH = GRID_WIDTH;
+const GAME_HEIGHT = GRID_HEIGHT;
+const GRAVITY = 0.14;
+const MOVE_SPEED = 0.7;
+const JUMP_FORCE = -2.8;
+const MAX_FALL = 4;
 
 function isSolid(grid: CollisionGrid | null, x: number, y: number): boolean {
   if (!grid) return false;
@@ -74,6 +75,7 @@ export class GameScene extends Phaser.Scene {
   private leftZone: Phaser.GameObjects.Zone | null = null;
   private rightZone: Phaser.GameObjects.Zone | null = null;
   private centerZone: Phaser.GameObjects.Zone | null = null;
+  private hasSpawned = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -84,19 +86,18 @@ export class GameScene extends Phaser.Scene {
     generateStickmanTexture(this, 'stickman-walk1', 1);
     generateStickmanTexture(this, 'stickman-walk2', 2);
 
-    // Transparent so we can optionally show camera under; solid paper for readability
-    this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.92)');
+    this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.94)');
 
     this.gridTexture = this.textures.createCanvas('gridOverlay', GAME_WIDTH, GAME_HEIGHT);
     if (this.gridTexture) {
       this.gridOverlay = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'gridOverlay');
-      this.gridOverlay.setAlpha(0.85);
+      this.gridOverlay.setAlpha(0.9);
       this.gridOverlay.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     }
 
     this.stickmanSprite = this.add.image(0, 0, 'stickman-idle');
-    this.stickmanSprite.setDisplaySize(10, 12);
-    this.stickman = this.add.container(64, 20, [this.stickmanSprite]);
+    this.stickmanSprite.setDisplaySize(12, 14);
+    this.stickman = this.add.container(GAME_WIDTH / 2, 24, [this.stickmanSprite]);
     this.stickman.setDepth(10);
 
     this.setupInputZones();
@@ -108,7 +109,6 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-UP', () => { this.inputJump = true; });
     this.input.keyboard?.on('keydown-SPACE', () => { this.inputJump = true; });
 
-    // Keep camera zoomed to the full 128x128 world
     this.cameras.main.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
     this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
   }
@@ -135,34 +135,58 @@ export class GameScene extends Phaser.Scene {
     this.centerZone.on('pointerdown', () => { this.inputJump = true; });
   }
 
-  setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement) {
+  /**
+   * Update collision map. Only respawns stickman on first grid or if
+   * current position is no longer valid (e.g. fell off world).
+   */
+  setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement, forceRespawn = false) {
     this.collisionGrid = grid;
+
+    // Recreate texture if size changed
+    if (this.gridTexture && (this.gridTexture.width !== grid.width || this.gridTexture.height !== grid.height)) {
+      this.textures.remove('gridOverlay');
+      this.gridTexture = this.textures.createCanvas('gridOverlay', grid.width, grid.height);
+      if (this.gridOverlay) {
+        this.gridOverlay.destroy();
+        this.gridOverlay = this.add.image(grid.width / 2, grid.height / 2, 'gridOverlay');
+        this.gridOverlay.setDepth(0);
+      }
+    }
 
     if (this.gridTexture) {
       const ctx = this.gridTexture.getContext();
-      ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+      ctx.clearRect(0, 0, grid.width, grid.height);
       ctx.drawImage(gridCanvas, 0, 0);
       this.gridTexture.refresh();
     }
 
     if (this.gridOverlay) {
+      this.gridOverlay.setTexture('gridOverlay');
+      this.gridOverlay.setPosition(grid.width / 2, grid.height / 2);
+      this.gridOverlay.setDisplaySize(grid.width, grid.height);
       this.gridOverlay.setVisible(true);
-      this.gridOverlay.setAlpha(0.9);
+      this.gridOverlay.setAlpha(0.92);
     }
 
-    this.spawnStickman();
+    if (!this.hasSpawned || forceRespawn) {
+      this.spawnStickman();
+      this.hasSpawned = true;
+    } else if (this.stickman) {
+      // Keep position; only nudge if completely outside bounds
+      this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, grid.width - 4);
+      this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, grid.height - 4);
+    }
   }
 
   private spawnStickman() {
     if (!this.collisionGrid || !this.stickman) return;
 
     const cx = Math.floor(this.collisionGrid.width / 2);
-    let spawnY = 10;
+    let spawnY = 20;
 
-    // Find first solid platform from top in center column
     for (let y = 0; y < this.collisionGrid.height; y++) {
       if (isSolid(this.collisionGrid, cx, y)) {
-        spawnY = Math.max(2, y - 8);
+        spawnY = Math.max(4, y - 10);
         break;
       }
     }
@@ -181,8 +205,8 @@ export class GameScene extends Phaser.Scene {
   update() {
     if (!this.stickman || !this.collisionGrid) return;
 
-    const charWidth = 6;
-    const charHeight = 10;
+    const charWidth = 7;
+    const charHeight = 12;
 
     let targetVx = 0;
     if (this.inputLeft) targetVx = -MOVE_SPEED;
@@ -212,20 +236,18 @@ export class GameScene extends Phaser.Scene {
       this.stickman.y = newY;
       this.grounded = false;
     } else {
-      if (this.vy > 0) {
-        this.grounded = true;
-      }
+      if (this.vy > 0) this.grounded = true;
       this.vy = 0;
     }
 
-    this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 3, GAME_WIDTH - 3);
-    this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 3, GAME_HEIGHT - 3);
+    this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, this.collisionGrid.width - 4);
+    this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, this.collisionGrid.height - 4);
 
     if (this.grounded && (this.inputLeft || this.inputRight)) {
       if (!this.walkAnim) {
         this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
         this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
-        this.walkAnim = this.time.delayedCall(120, () => {
+        this.walkAnim = this.time.delayedCall(110, () => {
           this.walkAnim = null;
         });
       }
@@ -276,6 +298,10 @@ export class GameScene extends Phaser.Scene {
   hasGrid(): boolean {
     return this.collisionGrid !== null;
   }
+
+  resetSpawnFlag() {
+    this.hasSpawned = false;
+  }
 }
 
 export class PhaserGameManager {
@@ -291,7 +317,6 @@ export class PhaserGameManager {
     return new Promise((resolve) => {
       this.scene = new GameScene();
 
-      // Fill the parent container completely; world stays 128x128 and is scaled up
       this.game = new Phaser.Game({
         type: Phaser.AUTO,
         parent: this.container,
@@ -299,7 +324,7 @@ export class PhaserGameManager {
         height: GAME_HEIGHT,
         backgroundColor: '#f7f3e8',
         scale: {
-          mode: Phaser.Scale.ENVELOP,
+          mode: Phaser.Scale.FIT,
           autoCenter: Phaser.Scale.CENTER_BOTH,
           width: GAME_WIDTH,
           height: GAME_HEIGHT,
@@ -319,15 +344,14 @@ export class PhaserGameManager {
       });
 
       this.game.events.once(Phaser.Core.Events.READY, () => {
-        // Force a resize so the canvas matches the container on first paint
         this.game?.scale.refresh();
         resolve();
       });
     });
   }
 
-  setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement) {
-    this.scene?.setCollisionGrid(grid, gridCanvas);
+  setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement, forceRespawn = false) {
+    this.scene?.setCollisionGrid(grid, gridCanvas, forceRespawn);
   }
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
