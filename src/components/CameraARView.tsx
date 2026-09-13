@@ -16,8 +16,14 @@ interface CameraARViewProps {
   threshold: number;
   levelConfig: LevelConfig;
   onDebugUpdate: (info: Partial<DebugInfo>) => void;
-  onGridReady: (grid: CollisionGrid | null, previewUrl: string | null) => void;
+  onGridReady: (
+    grid: CollisionGrid | null,
+    previewUrl: string | null,
+    captureDataUrl?: string | null
+  ) => void;
   onThresholdChange: (value: number) => void;
+  /** Persisted capture from parent / localStorage — restore map without new photo */
+  savedCaptureDataUrl?: string | null;
 }
 
 export function CameraARView({
@@ -26,6 +32,7 @@ export function CameraARView({
   onDebugUpdate,
   onGridReady,
   onThresholdChange,
+  savedCaptureDataUrl = null,
 }: CameraARViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const gameContainerRef = useRef<HTMLDivElement>(null);
@@ -33,6 +40,7 @@ export function CameraARView({
   const streamRef = useRef<MediaStream | null>(null);
   const lastCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isFirstProcessRef = useRef(true);
+  const restoredRef = useRef(false);
   const fpsRef = useRef<{ frames: number; lastTime: number }>({ frames: 0, lastTime: performance.now() });
   const [trackingState, setTrackingState] = useState<TrackingState>('idle');
   const [showDebug, setShowDebug] = useState(false);
@@ -59,7 +67,9 @@ export function CameraARView({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setCameraReady(true);
-        setTrackingState('searching');
+        if (!lastCaptureCanvasRef.current) {
+          setTrackingState('searching');
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Camera access failed';
@@ -77,19 +87,6 @@ export function CameraARView({
       videoRef.current.srcObject = null;
     }
     setCameraReady(false);
-    setTrackingState('idle');
-  }, []);
-
-  useEffect(() => {
-    startCamera();
-    return () => {
-      stopCamera();
-      if (phaserRef.current) {
-        phaserRef.current.destroy();
-        phaserRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const ensurePhaser = useCallback(async () => {
@@ -115,7 +112,8 @@ export function CameraARView({
         threshold: thresh,
       });
 
-      onGridReady(result.grid, result.previewCanvas.toDataURL());
+      const captureUrl = sourceCanvas.toDataURL('image/jpeg', 0.85);
+      onGridReady(result.grid, result.previewCanvas.toDataURL(), captureUrl);
 
       const manager = await ensurePhaser();
       manager?.setCollisionGrid(result.grid, result.gridCanvas, forceRespawn);
@@ -125,6 +123,37 @@ export function CameraARView({
     },
     [onDebugUpdate, onGridReady, ensurePhaser]
   );
+
+  // Restore from saved capture (localStorage / parent) once
+  useEffect(() => {
+    if (restoredRef.current || !savedCaptureDataUrl) return;
+    restoredRef.current = true;
+
+    const img = new Image();
+    img.onload = async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      lastCaptureCanvasRef.current = canvas;
+      isFirstProcessRef.current = true;
+      await processCanvas(canvas, threshold, true);
+      isFirstProcessRef.current = false;
+    };
+    img.src = savedCaptureDataUrl;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedCaptureDataUrl]);
+
+  useEffect(() => {
+    startCamera();
+    return () => {
+      // Do NOT destroy Phaser or clear capture on unmount — parent keeps us mounted.
+      // Only stop camera tracks to free the sensor when the whole app unloads.
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const capturePhoto = useCallback(async () => {
     if (!videoRef.current || !videoRef.current.videoWidth) return;
@@ -137,7 +166,6 @@ export function CameraARView({
       const vw = video.videoWidth;
       const vh = video.videoHeight;
 
-      // Center-crop to letter aspect 8.5:11
       const targetAspect = CAPTURE_WIDTH / CAPTURE_HEIGHT;
       const srcAspect = vw / vh;
       let cropW: number, cropH: number, offX: number, offY: number;
@@ -172,7 +200,6 @@ export function CameraARView({
     }
   }, [threshold, processCanvas]);
 
-  // Re-process on threshold change — keep character position
   useEffect(() => {
     if (hasGrid && lastCaptureCanvasRef.current && !isFirstProcessRef.current) {
       processCanvas(lastCaptureCanvasRef.current, threshold, false);
@@ -193,7 +220,8 @@ export function CameraARView({
     setTrackingState('searching');
     lastCaptureCanvasRef.current = null;
     isFirstProcessRef.current = true;
-    onGridReady(null, null);
+    restoredRef.current = true; // prevent re-restore of old save
+    onGridReady(null, null, null);
     onDebugUpdate({ gridResolution: '—', solidPixels: 0, characterPos: null });
   }, [onDebugUpdate, onGridReady]);
 
@@ -214,12 +242,12 @@ export function CameraARView({
       rafId = requestAnimationFrame(updateFps);
     };
 
-    if (cameraReady) {
+    if (cameraReady || hasGrid) {
       rafId = requestAnimationFrame(updateFps);
     }
 
     return () => cancelAnimationFrame(rafId);
-  }, [cameraReady, trackingState, onDebugUpdate]);
+  }, [cameraReady, hasGrid, trackingState, onDebugUpdate]);
 
   const trackingBadge = {
     idle: { text: 'Idle', icon: XCircle, color: 'bg-ink-500/80' },
@@ -241,7 +269,6 @@ export function CameraARView({
           }`}
         />
 
-        {/* Letter-size (8.5×11) capture guide */}
         {!hasGrid && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-6 py-8">
             <div
@@ -356,7 +383,7 @@ export function CameraARView({
           </div>
         )}
 
-        {!cameraReady && !error && (
+        {!cameraReady && !error && !hasGrid && (
           <div className="absolute inset-0 flex items-center justify-center bg-ink-900 z-30">
             <div className="text-center space-y-3">
               <Loader2 size={32} className="text-paper-100/60 animate-spin mx-auto" />
