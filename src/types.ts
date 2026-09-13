@@ -23,10 +23,17 @@ export interface SpriteFrame {
   name: string;
 }
 
+/** Paint brush modes for the finger-paint level editor */
+export type PaintTool = 'safe' | 'damage' | 'spawn' | 'goal' | 'erase';
+
 export interface LevelConfig {
   threshold: number;
   hazards: Hazard[];
   goal: { x: number; y: number } | null;
+  spawn: { x: number; y: number } | null;
+  /** Optional paint overlay data URLs (safe / damage highlighter layers) */
+  safePaintDataUrl?: string | null;
+  damagePaintDataUrl?: string | null;
 }
 
 export interface Hazard {
