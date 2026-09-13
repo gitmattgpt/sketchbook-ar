@@ -21,38 +21,30 @@ function generateStickmanTexture(scene: Phaser.Scene, key: string, frame: number
   const graphics = scene.make.graphics({ x: 0, y: 0 }, false);
   graphics.lineStyle(2.5, 0x2b2b2b, 1);
   graphics.fillStyle(0xf7f3e8, 1);
-
   graphics.fillCircle(12, 6, 4);
   graphics.strokeCircle(12, 6, 4);
-
   graphics.beginPath();
   graphics.moveTo(12, 10);
   graphics.lineTo(12, 20);
   graphics.strokePath();
-
   const armSwing = frame === 0 ? 0 : frame === 1 ? 5 : -5;
   const legSwing = frame === 0 ? 0 : frame === 1 ? 6 : -6;
-
   graphics.beginPath();
   graphics.moveTo(12, 13);
   graphics.lineTo(12 - armSwing, 19);
   graphics.strokePath();
-
   graphics.beginPath();
   graphics.moveTo(12, 13);
   graphics.lineTo(12 + armSwing, 19);
   graphics.strokePath();
-
   graphics.beginPath();
   graphics.moveTo(12, 20);
   graphics.lineTo(12 - legSwing, 26);
   graphics.strokePath();
-
   graphics.beginPath();
   graphics.moveTo(12, 20);
   graphics.lineTo(12 + legSwing, 26);
   graphics.strokePath();
-
   graphics.generateTexture(key, 24, 28);
   graphics.destroy();
 }
@@ -87,33 +79,26 @@ export class GameScene extends Phaser.Scene {
     generateStickmanTexture(this, 'stickman-idle', 0);
     generateStickmanTexture(this, 'stickman-walk1', 1);
     generateStickmanTexture(this, 'stickman-walk2', 2);
-
     this.loadCustomWalkFromStorage();
-
     this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.94)');
-
     this.gridTexture = this.textures.createCanvas('gridOverlay', GAME_WIDTH, GAME_HEIGHT);
     if (this.gridTexture) {
       this.gridOverlay = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'gridOverlay');
       this.gridOverlay.setAlpha(0.9);
       this.gridOverlay.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     }
-
     const startKey = this.useCustomWalk && this.customWalkKeys[0] ? this.customWalkKeys[0] : 'stickman-idle';
     this.stickmanSprite = this.add.image(0, 0, startKey);
     this.stickmanSprite.setDisplaySize(14, 16);
     this.stickman = this.add.container(GAME_WIDTH / 2, 24, [this.stickmanSprite]);
     this.stickman.setDepth(10);
-
     this.setupInputZones();
-
     this.input.keyboard?.on('keydown-LEFT', () => { this.inputLeft = true; });
     this.input.keyboard?.on('keyup-LEFT', () => { this.inputLeft = false; });
     this.input.keyboard?.on('keydown-RIGHT', () => { this.inputRight = true; });
     this.input.keyboard?.on('keyup-RIGHT', () => { this.inputRight = false; });
     this.input.keyboard?.on('keydown-UP', () => { this.inputJump = true; });
     this.input.keyboard?.on('keydown-SPACE', () => { this.inputJump = true; });
-
     this.cameras.main.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
     this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
   }
@@ -124,7 +109,6 @@ export class GameScene extends Phaser.Scene {
       if (!raw) return;
       const urls: string[] = JSON.parse(raw);
       if (!Array.isArray(urls) || urls.length === 0) return;
-
       this.customWalkKeys = [];
       urls.forEach((url, i) => {
         const key = `custom-walk-${i}`;
@@ -138,7 +122,6 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Call after exporting a new cycle from the Animator */
   reloadCustomWalk() {
     this.loadCustomWalkFromStorage();
     if (this.stickmanSprite && this.useCustomWalk && this.customWalkKeys[0]) {
@@ -151,19 +134,16 @@ export class GameScene extends Phaser.Scene {
     this.leftZone?.destroy();
     this.rightZone?.destroy();
     this.centerZone?.destroy();
-
     this.leftZone = this.add.zone(0, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
     this.leftZone.setInteractive();
     this.leftZone.on('pointerdown', () => { this.inputLeft = true; });
     this.leftZone.on('pointerup', () => { this.inputLeft = false; });
     this.leftZone.on('pointerout', () => { this.inputLeft = false; });
-
     this.rightZone = this.add.zone((GAME_WIDTH * 2) / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
     this.rightZone.setInteractive();
     this.rightZone.on('pointerdown', () => { this.inputRight = true; });
     this.rightZone.on('pointerup', () => { this.inputRight = false; });
     this.rightZone.on('pointerout', () => { this.inputRight = false; });
-
     this.centerZone = this.add.zone(GAME_WIDTH / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
     this.centerZone.setInteractive();
     this.centerZone.on('pointerdown', () => { this.inputJump = true; });
@@ -171,7 +151,6 @@ export class GameScene extends Phaser.Scene {
 
   setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement, forceRespawn = false) {
     this.collisionGrid = grid;
-
     if (this.gridTexture && (this.gridTexture.width !== grid.width || this.gridTexture.height !== grid.height)) {
       this.textures.remove('gridOverlay');
       this.gridTexture = this.textures.createCanvas('gridOverlay', grid.width, grid.height);
@@ -181,14 +160,12 @@ export class GameScene extends Phaser.Scene {
         this.gridOverlay.setDepth(0);
       }
     }
-
     if (this.gridTexture) {
       const ctx = this.gridTexture.getContext();
       ctx.clearRect(0, 0, grid.width, grid.height);
       ctx.drawImage(gridCanvas, 0, 0);
       this.gridTexture.refresh();
     }
-
     if (this.gridOverlay) {
       this.gridOverlay.setTexture('gridOverlay');
       this.gridOverlay.setPosition(grid.width / 2, grid.height / 2);
@@ -196,7 +173,6 @@ export class GameScene extends Phaser.Scene {
       this.gridOverlay.setVisible(true);
       this.gridOverlay.setAlpha(0.92);
     }
-
     if (!this.hasSpawned || forceRespawn) {
       this.spawnStickman();
       this.hasSpawned = true;
@@ -208,22 +184,24 @@ export class GameScene extends Phaser.Scene {
 
   private spawnStickman() {
     if (!this.collisionGrid || !this.stickman) return;
-
     const cx = Math.floor(this.collisionGrid.width / 2);
     let spawnY = 20;
-
     for (let y = 0; y < this.collisionGrid.height; y++) {
       if (isSolid(this.collisionGrid, cx, y)) {
         spawnY = Math.max(4, y - 10);
         break;
       }
     }
-
     this.stickman.x = cx;
     this.stickman.y = spawnY;
     this.vx = 0;
     this.vy = 0;
     this.grounded = false;
+  }
+
+  /** Public respawn to original spawn point */
+  restartSpawn() {
+    this.spawnStickman();
   }
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
@@ -232,15 +210,12 @@ export class GameScene extends Phaser.Scene {
 
   update() {
     if (!this.stickman || !this.collisionGrid) return;
-
     const charWidth = 7;
     const charHeight = 12;
-
     let targetVx = 0;
     if (this.inputLeft) targetVx = -MOVE_SPEED;
     if (this.inputRight) targetVx = MOVE_SPEED;
     this.vx = targetVx;
-
     if (this.inputJump && this.grounded) {
       this.vy = JUMP_FORCE;
       this.grounded = false;
@@ -248,17 +223,14 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.inputJump = false;
     }
-
     this.vy += GRAVITY;
     if (this.vy > MAX_FALL) this.vy = MAX_FALL;
-
     const newX = this.stickman.x + this.vx;
     if (!this.checkCollision(newX, this.stickman.y, charWidth, charHeight)) {
       this.stickman.x = newX;
     } else {
       this.vx = 0;
     }
-
     const newY = this.stickman.y + this.vy;
     if (!this.checkCollision(this.stickman.x, newY, charWidth, charHeight)) {
       this.stickman.y = newY;
@@ -267,10 +239,8 @@ export class GameScene extends Phaser.Scene {
       if (this.vy > 0) this.grounded = true;
       this.vy = 0;
     }
-
     this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, this.collisionGrid.width - 4);
     this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, this.collisionGrid.height - 4);
-
     if (this.grounded && (this.inputLeft || this.inputRight)) {
       if (!this.walkAnim) {
         if (this.useCustomWalk && this.customWalkKeys.length > 0) {
@@ -280,45 +250,25 @@ export class GameScene extends Phaser.Scene {
           this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
           this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
         }
-        this.walkAnim = this.time.delayedCall(120, () => {
-          this.walkAnim = null;
-        });
+        this.walkAnim = this.time.delayedCall(120, () => { this.walkAnim = null; });
       }
     } else if (this.useCustomWalk && this.customWalkKeys[0]) {
       this.stickmanSprite?.setTexture(this.customWalkKeys[0]);
     } else {
       this.stickmanSprite?.setTexture('stickman-idle');
     }
-
-    if (this.inputLeft && !this.inputRight) {
-      this.stickmanSprite?.setFlipX(true);
-    } else if (this.inputRight && !this.inputLeft) {
-      this.stickmanSprite?.setFlipX(false);
-    }
-
-    if (this.onPosUpdate) {
-      this.onPosUpdate({ x: this.stickman.x, y: this.stickman.y });
-    }
+    if (this.inputLeft && !this.inputRight) this.stickmanSprite?.setFlipX(true);
+    else if (this.inputRight && !this.inputLeft) this.stickmanSprite?.setFlipX(false);
+    if (this.onPosUpdate) this.onPosUpdate({ x: this.stickman.x, y: this.stickman.y });
   }
 
   private checkCollision(x: number, y: number, w: number, h: number): boolean {
     if (!this.collisionGrid) return false;
-
     const left = x - w / 2;
     const right = x + w / 2;
     const top = y - h / 2;
     const bottom = y + h / 2;
-
-    const checkPoints = [
-      [left, bottom],
-      [right, bottom],
-      [x, bottom],
-      [left, top],
-      [right, top],
-      [left, y],
-      [right, y],
-    ];
-
+    const checkPoints = [[left, bottom], [right, bottom], [x, bottom], [left, top], [right, top], [left, y], [right, y]];
     for (const [px, py] of checkPoints) {
       if (isSolid(this.collisionGrid, px, py)) return true;
     }
@@ -351,33 +301,18 @@ export class PhaserGameManager {
   init(): Promise<void> {
     return new Promise((resolve) => {
       this.scene = new GameScene();
-
       this.game = new Phaser.Game({
         type: Phaser.AUTO,
         parent: this.container,
         width: GAME_WIDTH,
         height: GAME_HEIGHT,
         backgroundColor: '#f7f3e8',
-        scale: {
-          mode: Phaser.Scale.FIT,
-          autoCenter: Phaser.Scale.CENTER_BOTH,
-          width: GAME_WIDTH,
-          height: GAME_HEIGHT,
-        },
+        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: GAME_WIDTH, height: GAME_HEIGHT },
         scene: [this.scene],
-        render: {
-          pixelArt: true,
-          antialias: false,
-        },
-        fps: {
-          target: 60,
-          min: 30,
-        },
-        input: {
-          activePointers: 3,
-        },
+        render: { pixelArt: true, antialias: false },
+        fps: { target: 60, min: 30 },
+        input: { activePointers: 3 },
       });
-
       this.game.events.once(Phaser.Core.Events.READY, () => {
         this.game?.scale.refresh();
         resolve();
@@ -395,6 +330,10 @@ export class PhaserGameManager {
 
   reloadCustomWalk() {
     this.scene?.reloadCustomWalk();
+  }
+
+  restartSpawn() {
+    this.scene?.restartSpawn();
   }
 
   getCharacterPos() {
