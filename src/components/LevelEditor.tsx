@@ -1,5 +1,7 @@
-import { Trash2, Plus, Flag, AlertTriangle, Info } from 'lucide-react';
-import type { Hazard, LevelConfig } from '@/types';
+import { useRef, useState, useEffect, useCallback } from 'react';
+import { Eraser, Flag, MapPin, Shield, Skull, Trash2 } from 'lucide-react';
+import type { LevelConfig, PaintTool } from '@/types';
+import { GRID_WIDTH, GRID_HEIGHT } from '@/utils/imageProcessor';
 
 interface LevelEditorProps {
   config: LevelConfig;
@@ -7,141 +9,373 @@ interface LevelEditorProps {
   gridPreview: string | null;
 }
 
-const HAZARD_TYPES: { type: Hazard['type']; label: string; color: string }[] = [
-  { type: 'spike', label: 'Spikes', color: '#c0392b' },
-  { type: 'pit', label: 'Pit', color: '#2c3e50' },
-  { type: 'lava', label: 'Lava', color: '#e67e22' },
+const TOOLS: {
+  id: PaintTool;
+  label: string;
+  color: string;
+  swatch: string;
+  hint: string;
+  icon: typeof Shield;
+}[] = [
+  {
+    id: 'safe',
+    label: 'Safe',
+    color: 'rgba(46, 204, 113, 0.55)',
+    swatch: '#2ecc71',
+    hint: 'Paint walk-safe areas',
+    icon: Shield,
+  },
+  {
+    id: 'damage',
+    label: 'Damage',
+    color: 'rgba(231, 76, 60, 0.55)',
+    swatch: '#e74c3c',
+    hint: 'Paint hurt zones',
+    icon: Skull,
+  },
+  {
+    id: 'spawn',
+    label: 'Start',
+    color: '#3498db',
+    swatch: '#3498db',
+    hint: 'Tap to set spawn',
+    icon: MapPin,
+  },
+  {
+    id: 'goal',
+    label: 'Goal',
+    color: '#f1c40f',
+    swatch: '#f1c40f',
+    hint: 'Tap to set goal',
+    icon: Flag,
+  },
+  {
+    id: 'erase',
+    label: 'Erase',
+    color: 'rgba(0,0,0,0.15)',
+    swatch: '#bdc3c7',
+    hint: 'Erase paint',
+    icon: Eraser,
+  },
 ];
 
+const BRUSH_RADIUS = 10;
+
 export function LevelEditor({ config, onConfigChange, gridPreview }: LevelEditorProps) {
-  const addHazard = (type: Hazard['type']) => {
-    const newHazard: Hazard = {
-      id: `hazard-${Date.now()}`,
-      x: 64,
-      y: 64,
-      width: 12,
-      height: 4,
-      type,
+  const containerRef = useRef<HTMLDivElement>(null);
+  const baseRef = useRef<HTMLCanvasElement>(null);
+  const safeRef = useRef<HTMLCanvasElement>(null);
+  const damageRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+  const lastPt = useRef<{ x: number; y: number } | null>(null);
+
+  const [tool, setTool] = useState<PaintTool>('safe');
+  const [brushSize, setBrushSize] = useState(BRUSH_RADIUS);
+
+  // Draw map preview onto base canvas
+  useEffect(() => {
+    const canvas = baseRef.current;
+    if (!canvas || !gridPreview) return;
+    const ctx = canvas.getContext('2d')!;
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#f7f3e8';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     };
-    onConfigChange({ ...config, hazards: [...config.hazards, newHazard] });
+    img.src = gridPreview;
+  }, [gridPreview]);
+
+  // Restore saved paint layers
+  useEffect(() => {
+    const loadLayer = (canvas: HTMLCanvasElement | null, url?: string | null) => {
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d')!;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!url) return;
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      img.src = url;
+    };
+    loadLayer(safeRef.current, config.safePaintDataUrl);
+    loadLayer(damageRef.current, config.damagePaintDataUrl);
+    // only on mount / when urls change from outside
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.safePaintDataUrl, config.damagePaintDataUrl]);
+
+  const persistPaint = useCallback(() => {
+    onConfigChange({
+      ...config,
+      safePaintDataUrl: safeRef.current?.toDataURL('image/png') ?? null,
+      damagePaintDataUrl: damageRef.current?.toDataURL('image/png') ?? null,
+    });
+  }, [config, onConfigChange]);
+
+  const canvasPoint = (e: React.TouchEvent | React.MouseEvent, canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0]?.clientX ?? e.changedTouches[0]?.clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0]?.clientY ?? e.changedTouches[0]?.clientY : e.clientY;
+    const x = ((clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((clientY - rect.top) / rect.height) * canvas.height;
+    return { x, y };
   };
 
-  const removeHazard = (id: string) => {
-    onConfigChange({ ...config, hazards: config.hazards.filter((h) => h.id !== id) });
+  const paintAt = (x: number, y: number, from: { x: number; y: number } | null) => {
+    const target =
+      tool === 'safe' || (tool === 'erase' && true)
+        ? tool === 'damage'
+          ? damageRef.current
+          : safeRef.current
+        : tool === 'damage'
+          ? damageRef.current
+          : null;
+
+    // For erase, clear on both layers
+    if (tool === 'erase') {
+      [safeRef.current, damageRef.current].forEach((c) => {
+        if (!c) return;
+        const ctx = c.getContext('2d')!;
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = brushSize * 2;
+        ctx.beginPath();
+        if (from) {
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(x, y);
+        } else {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + 0.1, y);
+        }
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      });
+      return;
+    }
+
+    if (tool === 'safe' || tool === 'damage') {
+      const canvas = tool === 'safe' ? safeRef.current : damageRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d')!;
+      const color = TOOLS.find((t) => t.id === tool)!.color;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = brushSize * 2;
+      ctx.beginPath();
+      if (from) {
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      } else {
+        ctx.arc(x, y, brushSize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   };
 
-  const setGoal = () => {
-    onConfigChange({ ...config, goal: config.goal ? null : { x: 100, y: 40 } });
+  const handleStart = (e: React.TouchEvent | React.MouseEvent) => {
+    e.preventDefault();
+    const canvas = safeRef.current;
+    if (!canvas) return;
+
+    const pt = canvasPoint(e, canvas);
+
+    if (tool === 'spawn') {
+      onConfigChange({ ...config, spawn: { x: pt.x, y: pt.y } });
+      return;
+    }
+    if (tool === 'goal') {
+      onConfigChange({ ...config, goal: { x: pt.x, y: pt.y } });
+      return;
+    }
+
+    drawing.current = true;
+    lastPt.current = pt;
+    paintAt(pt.x, pt.y, null);
   };
+
+  const handleMove = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const canvas = safeRef.current;
+    if (!canvas) return;
+    const pt = canvasPoint(e, canvas);
+    paintAt(pt.x, pt.y, lastPt.current);
+    lastPt.current = pt;
+  };
+
+  const handleEnd = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    lastPt.current = null;
+    if (tool === 'safe' || tool === 'damage' || tool === 'erase') {
+      persistPaint();
+    }
+  };
+
+  const clearAllPaint = () => {
+    [safeRef.current, damageRef.current].forEach((c) => {
+      if (!c) return;
+      c.getContext('2d')!.clearRect(0, 0, c.width, c.height);
+    });
+    onConfigChange({
+      ...config,
+      safePaintDataUrl: null,
+      damagePaintDataUrl: null,
+      spawn: null,
+      goal: null,
+    });
+  };
+
+  if (!gridPreview) {
+    return (
+      <div className="flex flex-col h-full paper-bg items-center justify-center px-6 text-center">
+        <p className="font-hand text-ink-600 text-sm leading-relaxed">
+          Capture a paper map in <strong>AR Play</strong> first, then come back here to paint safe zones, damage, start, and goal.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-full paper-bg overflow-y-auto no-scrollbar">
-      <div className="max-w-md mx-auto w-full px-5 py-6 space-y-6">
-        <header className="space-y-1">
-          <h2 className="text-2xl font-script font-bold text-ink-800">Level Setup</h2>
-          <p className="text-sm font-hand text-ink-500">
-            Place hazards and goals on your paper world. These will appear when playing in AR.
-          </p>
-        </header>
+    <div className="flex flex-col h-full paper-bg overflow-hidden">
+      <div className="px-4 pt-3 pb-2 shrink-0">
+        <h2 className="text-xl font-script font-bold text-ink-800">Level Paint</h2>
+        <p className="text-xs font-hand text-ink-500">
+          {TOOLS.find((t) => t.id === tool)?.hint ?? 'Paint on the map'}
+        </p>
+      </div>
 
-        {gridPreview && (
-          <section className="space-y-2">
-            <h3 className="font-hand font-bold text-ink-700 text-sm flex items-center gap-2">
-              <Info size={14} /> Current Level Preview
-            </h3>
-            <div className="relative bg-paper-100 border-2 border-ink-800/20 rounded-lg overflow-hidden">
-              <img src={gridPreview} alt="Level grid preview" className="w-full block" />
-              {config.goal && (
-                <div
-                  className="absolute w-4 h-4 border-2 border-green-700 bg-green-500/40 rounded-sm"
-                  style={{
-                    left: `${(config.goal.x / 128) * 100}%`,
-                    top: `${(config.goal.y / 128) * 100}%`,
-                  }}
-                />
-              )}
-              {config.hazards.map((h) => (
-                <div
-                  key={h.id}
-                  className="absolute border-2 rounded-sm"
-                  style={{
-                    left: `${((h.x - h.width / 2) / 128) * 100}%`,
-                    top: `${((h.y - h.height / 2) / 128) * 100}%`,
-                    width: `${(h.width / 128) * 100}%`,
-                    height: `${(h.height / 128) * 100}%`,
-                    backgroundColor: HAZARD_TYPES.find((t) => t.type === h.type)?.color + '40',
-                    borderColor: HAZARD_TYPES.find((t) => t.type === h.type)?.color,
-                  }}
-                />
-              ))}
-            </div>
-          </section>
-        )}
+      {/* Canvas stack */}
+      <div className="flex-1 min-h-0 px-3 flex items-center justify-center">
+        <div
+          ref={containerRef}
+          className="relative w-full max-w-md border-2 border-ink-800/25 rounded-lg overflow-hidden bg-paper-100 touch-none shadow-sm"
+          style={{ aspectRatio: `${GRID_WIDTH} / ${GRID_HEIGHT}` }}
+        >
+          <canvas
+            ref={baseRef}
+            width={GRID_WIDTH}
+            height={GRID_HEIGHT}
+            className="absolute inset-0 w-full h-full"
+          />
+          <canvas
+            ref={safeRef}
+            width={GRID_WIDTH}
+            height={GRID_HEIGHT}
+            className="absolute inset-0 w-full h-full"
+          />
+          <canvas
+            ref={damageRef}
+            width={GRID_WIDTH}
+            height={GRID_HEIGHT}
+            className="absolute inset-0 w-full h-full"
+          />
+          {/* Interaction layer */}
+          <canvas
+            width={GRID_WIDTH}
+            height={GRID_HEIGHT}
+            className="absolute inset-0 w-full h-full z-10"
+            style={{ touchAction: 'none' }}
+            onMouseDown={handleStart}
+            onMouseMove={handleMove}
+            onMouseUp={handleEnd}
+            onMouseLeave={handleEnd}
+            onTouchStart={handleStart}
+            onTouchMove={handleMove}
+            onTouchEnd={handleEnd}
+          />
 
-        <section className="space-y-3">
-          <h3 className="font-hand font-bold text-ink-700 text-sm">Hazards</h3>
-          <div className="grid grid-cols-3 gap-2">
-            {HAZARD_TYPES.map(({ type, label, color }) => (
-              <button
-                key={type}
-                onClick={() => addHazard(type)}
-                className="flex flex-col items-center gap-1.5 p-3 border-2 border-ink-800/20 rounded-lg active:bg-paper-200 transition-colors"
-              >
-                <AlertTriangle size={20} style={{ color }} />
-                <span className="text-xs font-hand font-bold text-ink-700">{label}</span>
-              </button>
-            ))}
-          </div>
-
-          {config.hazards.length > 0 && (
-            <div className="space-y-2">
-              {config.hazards.map((h) => (
-                <div
-                  key={h.id}
-                  className="flex items-center gap-3 bg-paper-200/60 border border-ink-800/15 rounded-lg p-2.5"
-                >
-                  <div
-                    className="w-5 h-5 rounded shrink-0"
-                    style={{ backgroundColor: HAZARD_TYPES.find((t) => t.type === h.type)?.color }}
-                  />
-                  <span className="text-sm font-hand text-ink-700 capitalize">{h.type}</span>
-                  <span className="text-xs font-hand text-ink-400 ml-auto tabular-nums">
-                    ({h.x}, {h.y})
-                  </span>
-                  <button
-                    onClick={() => removeHazard(h.id)}
-                    className="text-red-500 active:scale-90 transition-transform"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              ))}
+          {/* Spawn marker */}
+          {config.spawn && (
+            <div
+              className="absolute z-20 pointer-events-none -translate-x-1/2 -translate-y-1/2"
+              style={{
+                left: `${(config.spawn.x / GRID_WIDTH) * 100}%`,
+                top: `${(config.spawn.y / GRID_HEIGHT) * 100}%`,
+              }}
+            >
+              <div className="w-6 h-6 rounded-full bg-blue-500 border-2 border-white shadow flex items-center justify-center">
+                <MapPin size={14} className="text-white" />
+              </div>
             </div>
           )}
-        </section>
 
-        <section className="space-y-2">
-          <h3 className="font-hand font-bold text-ink-700 text-sm">Goal</h3>
-          <button
-            onClick={setGoal}
-            className={`w-full flex items-center justify-center gap-2 p-3 border-2 rounded-lg transition-colors ${
-              config.goal
-                ? 'border-green-700 bg-green-500/15 text-green-800'
-                : 'border-ink-800/20 text-ink-600'
-            }`}
-          >
-            <Flag size={18} />
-            <span className="font-hand font-bold text-sm">
-              {config.goal ? 'Goal set — tap to remove' : 'Set goal position'}
-            </span>
-          </button>
-        </section>
+          {/* Goal marker */}
+          {config.goal && (
+            <div
+              className="absolute z-20 pointer-events-none -translate-x-1/2 -translate-y-1/2"
+              style={{
+                left: `${(config.goal.x / GRID_WIDTH) * 100}%`,
+                top: `${(config.goal.y / GRID_HEIGHT) * 100}%`,
+              }}
+            >
+              <div className="w-6 h-6 rounded-full bg-yellow-400 border-2 border-white shadow flex items-center justify-center">
+                <Flag size={14} className="text-ink-800" />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
-        <div className="border-t-2 border-dashed border-ink-800/15 pt-4">
-          <p className="text-xs font-hand text-ink-500 leading-relaxed">
-            Phase 2 will add draggable hazard placement directly on the live AR feed,
-            moving zones with physics, and win/lose conditions.
+      {/* Brush size */}
+      {(tool === 'safe' || tool === 'damage' || tool === 'erase') && (
+        <div className="px-4 py-1.5 flex items-center gap-3 shrink-0">
+          <span className="text-[10px] font-hand text-ink-500 w-10">Size</span>
+          <input
+            type="range"
+            min={4}
+            max={28}
+            value={brushSize}
+            onChange={(e) => setBrushSize(Number(e.target.value))}
+            className="flex-1"
+          />
+          <span className="text-[10px] font-hand text-ink-600 tabular-nums w-6">{brushSize}</span>
+        </div>
+      )}
+
+      {/* Palette */}
+      <div className="px-3 py-2 shrink-0 border-t border-ink-800/10 bg-paper-200/80">
+        <div className="flex items-stretch justify-between gap-1.5">
+          {TOOLS.map(({ id, label, swatch, icon: Icon }) => {
+            const active = tool === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setTool(id)}
+                className={`flex-1 flex flex-col items-center gap-1 py-2 rounded-lg border-2 transition-all ${
+                  active
+                    ? 'border-ink-800 bg-paper-100 scale-105 shadow-sm'
+                    : 'border-transparent bg-paper-100/50'
+                }`}
+              >
+                <span
+                  className="w-7 h-7 rounded-full flex items-center justify-center border border-black/10"
+                  style={{ backgroundColor: swatch }}
+                >
+                  <Icon size={14} className={id === 'goal' ? 'text-ink-800' : 'text-white'} />
+                </span>
+                <span className="text-[10px] font-hand font-bold text-ink-700">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-2 flex items-center justify-between">
+          <p className="text-[10px] font-hand text-ink-500">
+            {config.spawn ? 'Start set' : 'No start'} · {config.goal ? 'Goal set' : 'No goal'}
           </p>
+          <button
+            onClick={clearAllPaint}
+            className="flex items-center gap-1 text-[11px] font-hand font-bold text-red-600 px-2 py-1 rounded active:bg-red-50"
+          >
+            <Trash2 size={12} />
+            Clear all
+          </button>
         </div>
       </div>
     </div>
