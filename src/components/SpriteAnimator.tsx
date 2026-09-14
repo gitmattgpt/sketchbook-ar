@@ -11,9 +11,7 @@ const DEFAULT_FRAME_NAMES = ['Contact L', 'Pass L', 'Contact R', 'Pass R'];
 interface Joint { x: number; y: number }
 type Pose = Record<string, Joint>;
 
-// ─── Walk-cycle poses (normalized 0–1) ───
 const WALK_POSES: Pose[] = [
-  // 0 Contact L – left foot forward, right foot back
   {
     head: { x: 0.50, y: 0.15 }, neck: { x: 0.50, y: 0.25 }, torso: { x: 0.50, y: 0.46 },
     lShoulder: { x: 0.40, y: 0.29 }, rShoulder: { x: 0.60, y: 0.29 },
@@ -23,7 +21,6 @@ const WALK_POSES: Pose[] = [
     lKnee: { x: 0.36, y: 0.70 }, rKnee: { x: 0.64, y: 0.70 },
     lFoot: { x: 0.28, y: 0.90 }, rFoot: { x: 0.72, y: 0.88 },
   },
-  // 1 Pass L – left leg passing under body
   {
     head: { x: 0.50, y: 0.14 }, neck: { x: 0.50, y: 0.24 }, torso: { x: 0.50, y: 0.45 },
     lShoulder: { x: 0.41, y: 0.28 }, rShoulder: { x: 0.59, y: 0.28 },
@@ -33,7 +30,6 @@ const WALK_POSES: Pose[] = [
     lKnee: { x: 0.48, y: 0.68 }, rKnee: { x: 0.58, y: 0.72 },
     lFoot: { x: 0.48, y: 0.86 }, rFoot: { x: 0.62, y: 0.90 },
   },
-  // 2 Contact R – right foot forward
   {
     head: { x: 0.50, y: 0.15 }, neck: { x: 0.50, y: 0.25 }, torso: { x: 0.50, y: 0.46 },
     lShoulder: { x: 0.40, y: 0.29 }, rShoulder: { x: 0.60, y: 0.29 },
@@ -43,7 +39,6 @@ const WALK_POSES: Pose[] = [
     lKnee: { x: 0.36, y: 0.70 }, rKnee: { x: 0.64, y: 0.70 },
     lFoot: { x: 0.28, y: 0.88 }, rFoot: { x: 0.72, y: 0.90 },
   },
-  // 3 Pass R – right leg passing
   {
     head: { x: 0.50, y: 0.14 }, neck: { x: 0.50, y: 0.24 }, torso: { x: 0.50, y: 0.45 },
     lShoulder: { x: 0.41, y: 0.28 }, rShoulder: { x: 0.59, y: 0.28 },
@@ -162,6 +157,11 @@ function createInitialFrames(size: number): SpriteFrame[] {
   return DEFAULT_FRAME_NAMES.map((name) => createBlankFrame(name, size));
 }
 
+/** Wrap index into [0, len) so onion skin treats the timeline as an infinite loop */
+function wrapIndex(idx: number, len: number): number {
+  return ((idx % len) + len) % len;
+}
+
 export function SpriteAnimator() {
   const [canvasSize, setCanvasSize] = useState<CanvasSize>(128);
   const [frames, setFrames] = useState<SpriteFrame[]>(() => createInitialFrames(128));
@@ -175,7 +175,6 @@ export function SpriteAnimator() {
   const [onionAfter, setOnionAfter] = useState(1);
   const [showSkeleton, setShowSkeleton] = useState(true);
 
-  // Playback
   const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(8);
   const playRef = useRef<number | null>(null);
@@ -184,7 +183,6 @@ export function SpriteAnimator() {
   const drawRef = useRef<HTMLCanvasElement>(null);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
 
-  // Persist current drawing into frames state
   const persistCurrent = useCallback(() => {
     const canvas = drawRef.current;
     if (!canvas) return;
@@ -198,7 +196,7 @@ export function SpriteAnimator() {
 
   const redrawGuide = useCallback(async () => {
     const guide = guideRef.current;
-    if (!guide) return;
+    if (!guide || frames.length === 0) return;
     if (guide.width !== canvasSize) {
       guide.width = canvasSize;
       guide.height = canvasSize;
@@ -206,22 +204,28 @@ export function SpriteAnimator() {
     const ctx = guide.getContext('2d')!;
     ctx.clearRect(0, 0, canvasSize, canvasSize);
 
-    if (onionEnabled && onionBefore > 0) {
+    const n = frames.length;
+
+    // Previous frames (green) — wraps around so last frame sees frame 0 as "after" etc.
+    if (onionEnabled && onionBefore > 0 && n > 1) {
       for (let i = 1; i <= onionBefore; i++) {
-        const idx = activeIdx - i;
-        if (idx < 0) break;
+        const idx = wrapIndex(activeIdx - i, n);
+        if (idx === activeIdx) continue; // skip self on tiny loops
         const tinted = await tintImage(frames[idx].imageData, '#22c55e', 0.35, canvasSize);
         ctx.drawImage(tinted, 0, 0);
       }
     }
-    if (onionEnabled && onionAfter > 0) {
+
+    // Next frames (blue) — wraps so first frame sees last as previous, last sees first as next
+    if (onionEnabled && onionAfter > 0 && n > 1) {
       for (let i = 1; i <= onionAfter; i++) {
-        const idx = activeIdx + i;
-        if (idx >= frames.length) break;
+        const idx = wrapIndex(activeIdx + i, n);
+        if (idx === activeIdx) continue;
         const tinted = await tintImage(frames[idx].imageData, '#3b82f6', 0.35, canvasSize);
         ctx.drawImage(tinted, 0, 0);
       }
     }
+
     if (showSkeleton) {
       const pose = getPoseForFrame(activeIdx);
       drawStickman(ctx, canvasSize, pose, '#9ca3af', Math.max(1.5, canvasSize / 64), 0.55);
@@ -250,7 +254,6 @@ export function SpriteAnimator() {
     redrawGuide();
   }, [activeIdx, canvasSize, loadFrame, redrawGuide]);
 
-  // Playback loop
   useEffect(() => {
     if (!isPlaying) {
       if (playRef.current) {
@@ -269,9 +272,7 @@ export function SpriteAnimator() {
   }, [isPlaying, fps, frames.length]);
 
   const togglePlay = () => {
-    if (!isPlaying) {
-      persistCurrent();
-    }
+    if (!isPlaying) persistCurrent();
     setIsPlaying((p) => !p);
   };
 
@@ -379,71 +380,35 @@ export function SpriteAnimator() {
         <header className="space-y-1">
           <h2 className="text-2xl font-script font-bold text-ink-800">Sprite Animator</h2>
           <p className="text-sm font-hand text-ink-500">
-            Walk poses + playback. Draw over the skeleton, then hit Play.
+            Onion skin wraps in a loop. Draw the cycle, then Play.
           </p>
         </header>
 
-        {/* Dual Canvas */}
         <div className="relative bg-paper-100 border-2 border-ink-800/30 rounded-lg p-3 shadow-inner">
           <div className="relative w-full" style={{ paddingBottom: '100%' }}>
             <div className="absolute inset-0 rounded bg-white" />
-            <canvas
-              ref={guideRef}
-              width={canvasSize}
-              height={canvasSize}
-              className="absolute inset-0 w-full h-full rounded pointer-events-none"
-              style={{ imageRendering: 'pixelated' }}
-            />
-            <canvas
-              ref={drawRef}
-              width={canvasSize}
-              height={canvasSize}
-              className="absolute inset-0 w-full h-full rounded touch-none cursor-crosshair"
-              style={{ imageRendering: 'pixelated' }}
-              onPointerDown={startDraw}
-              onPointerMove={paint}
-              onPointerUp={endDraw}
-              onPointerLeave={endDraw}
-            />
+            <canvas ref={guideRef} width={canvasSize} height={canvasSize} className="absolute inset-0 w-full h-full rounded pointer-events-none" style={{ imageRendering: 'pixelated' }} />
+            <canvas ref={drawRef} width={canvasSize} height={canvasSize} className="absolute inset-0 w-full h-full rounded touch-none cursor-crosshair" style={{ imageRendering: 'pixelated' }} onPointerDown={startDraw} onPointerMove={paint} onPointerUp={endDraw} onPointerLeave={endDraw} />
           </div>
-          <div className="absolute top-2 right-2 text-[10px] font-hand bg-paper-100/90 px-1.5 py-0.5 rounded border border-ink-800/20">
-            {canvasSize}×{canvasSize}
-          </div>
+          <div className="absolute top-2 right-2 text-[10px] font-hand bg-paper-100/90 px-1.5 py-0.5 rounded border border-ink-800/20">{canvasSize}×{canvasSize}</div>
         </div>
 
-        {/* Play / Stop + FPS */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={togglePlay}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg border-2 font-hand font-bold text-sm transition-colors ${
-              isPlaying
-                ? 'border-red-500 bg-red-50 text-red-700'
-                : 'border-ink-800 bg-ink-800 text-white'
-            }`}
-          >
+          <button onClick={togglePlay} className={`flex items-center gap-1.5 px-4 py-2 rounded-lg border-2 font-hand font-bold text-sm transition-colors ${
+            isPlaying ? 'border-red-500 bg-red-50 text-red-700' : 'border-ink-800 bg-ink-800 text-white'
+          }`}>
             {isPlaying ? <Square size={14} /> : <Play size={14} />}
             {isPlaying ? 'Stop' : 'Play'}
           </button>
-
           <div className="flex items-center gap-1.5 flex-1">
             <span className="text-xs font-hand font-bold text-ink-600">FPS</span>
-            <select
-              value={fps}
-              onChange={(e) => setFps(Number(e.target.value))}
-              className="flex-1 border-2 border-ink-800/20 rounded-lg px-2 py-1.5 text-xs font-hand bg-white"
-            >
-              {FPS_OPTIONS.map((f) => (
-                <option key={f} value={f}>{f}</option>
-              ))}
+            <select value={fps} onChange={(e) => setFps(Number(e.target.value))} className="flex-1 border-2 border-ink-800/20 rounded-lg px-2 py-1.5 text-xs font-hand bg-white">
+              {FPS_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
             </select>
           </div>
-
-          <span className="text-xs font-hand text-ink-500 tabular-nums">
-            {activeIdx + 1}/{frames.length}
-          </span>
+          <span className="text-xs font-hand text-ink-500 tabular-nums">{activeIdx + 1}/{frames.length}</span>
         </div>
 
-        {/* Size */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-xs font-hand font-bold text-ink-700">Character Size</span>
@@ -451,53 +416,28 @@ export function SpriteAnimator() {
           </div>
           <div className="flex gap-2">
             {SIZE_OPTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => handleSizeChange(s)}
-                className={`flex-1 py-1.5 text-xs font-hand font-bold rounded-lg border-2 transition-colors ${
-                  canvasSize === s ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'
-                }`}
-              >
-                {s}
-              </button>
+              <button key={s} onClick={() => handleSizeChange(s)} className={`flex-1 py-1.5 text-xs font-hand font-bold rounded-lg border-2 transition-colors ${
+                canvasSize === s ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'
+              }`}>{s}</button>
             ))}
           </div>
         </div>
 
-        {/* Brush / Eraser */}
         <div className="flex items-center gap-3">
           <div className="flex gap-1">
-            <button
-              onClick={() => setTool('brush')}
-              className={`p-2 rounded-lg border-2 transition-colors ${
-                tool === 'brush' ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'
-              }`}
-            >
-              <Pencil size={16} />
-            </button>
-            <button
-              onClick={() => setTool('eraser')}
-              className={`p-2 rounded-lg border-2 transition-colors ${
-                tool === 'eraser' ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'
-              }`}
-            >
-              <Eraser size={16} />
-            </button>
+            <button onClick={() => setTool('brush')} className={`p-2 rounded-lg border-2 transition-colors ${tool === 'brush' ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'}`}><Pencil size={16} /></button>
+            <button onClick={() => setTool('eraser')} className={`p-2 rounded-lg border-2 transition-colors ${tool === 'eraser' ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'}`}><Eraser size={16} /></button>
           </div>
           <input type="range" min={1} max={12} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="flex-1" />
           <span className="text-xs font-hand text-ink-600 tabular-nums w-6 text-right">{brushSize}</span>
         </div>
 
-        {/* Onion + Skeleton */}
         <div className="space-y-2">
-          <button
-            onClick={() => setOnionEnabled(!onionEnabled)}
-            className={`w-full flex items-center justify-center gap-2 p-2.5 border-2 rounded-lg transition-colors ${
-              onionEnabled ? 'border-green-600 bg-green-50 text-green-800' : 'border-ink-800/20 text-ink-500'
-            }`}
-          >
+          <button onClick={() => setOnionEnabled(!onionEnabled)} className={`w-full flex items-center justify-center gap-2 p-2.5 border-2 rounded-lg transition-colors ${
+            onionEnabled ? 'border-green-600 bg-green-50 text-green-800' : 'border-ink-800/20 text-ink-500'
+          }`}>
             <Layers size={16} />
-            <span className="text-sm font-hand font-bold">Onion Skin {onionEnabled ? 'On' : 'Off'}</span>
+            <span className="text-sm font-hand font-bold">Onion Skin {onionEnabled ? 'On (loops)' : 'Off'}</span>
           </button>
           {onionEnabled && (
             <div className="flex gap-3 text-xs font-hand">
@@ -515,45 +455,28 @@ export function SpriteAnimator() {
               </label>
             </div>
           )}
-          <button
-            onClick={() => setShowSkeleton(!showSkeleton)}
-            className={`w-full flex items-center justify-center gap-2 p-2 border-2 rounded-lg transition-colors text-sm font-hand font-bold ${
-              showSkeleton ? 'border-ink-800/40 bg-ink-800/5 text-ink-700' : 'border-ink-800/20 text-ink-500'
-            }`}
-          >
-            Skeleton Guide {showSkeleton ? 'On' : 'Off'}
-          </button>
+          <button onClick={() => setShowSkeleton(!showSkeleton)} className={`w-full flex items-center justify-center gap-2 p-2 border-2 rounded-lg transition-colors text-sm font-hand font-bold ${
+            showSkeleton ? 'border-ink-800/40 bg-ink-800/5 text-ink-700' : 'border-ink-800/20 text-ink-500'
+          }`}>Skeleton Guide {showSkeleton ? 'On' : 'Off'}</button>
         </div>
 
-        {/* Frames */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="font-hand font-bold text-ink-700 text-sm">Frames ({frames.length})</h3>
-            <button onClick={addFrame} className="flex items-center gap-1 text-sm font-hand font-bold text-ink-700 active:scale-95 transition-transform">
-              <Plus size={16} /> Add
-            </button>
+            <button onClick={addFrame} className="flex items-center gap-1 text-sm font-hand font-bold text-ink-700 active:scale-95 transition-transform"><Plus size={16} /> Add</button>
           </div>
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
             {frames.map((frame, idx) => (
-              <div
-                key={frame.id}
-                className={`relative shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
-                  idx === activeIdx ? 'border-ink-800 scale-105 shadow-md' : 'border-ink-800/20'
-                }`}
-                onClick={() => selectFrame(idx)}
-              >
+              <div key={frame.id} className={`relative shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                idx === activeIdx ? 'border-ink-800 scale-105 shadow-md' : 'border-ink-800/20'
+              }`} onClick={() => selectFrame(idx)}>
                 <img src={frame.imageData} alt={frame.name} className="w-16 h-16 block bg-white" style={{ imageRendering: 'pixelated' }} />
                 {frames.length > 1 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); deleteFrame(idx); }}
-                    className="absolute top-0.5 right-0.5 bg-paper-100/90 rounded-full p-0.5 active:scale-90"
-                  >
+                  <button onClick={(e) => { e.stopPropagation(); deleteFrame(idx); }} className="absolute top-0.5 right-0.5 bg-paper-100/90 rounded-full p-0.5 active:scale-90">
                     <Trash2 size={10} className="text-red-500" />
                   </button>
                 )}
-                <span className="absolute bottom-0 left-0 right-0 text-[8px] font-hand text-center bg-paper-100/80 py-0.5 truncate px-0.5">
-                  {frame.name}
-                </span>
+                <span className="absolute bottom-0 left-0 right-0 text-[8px] font-hand text-center bg-paper-100/80 py-0.5 truncate px-0.5">{frame.name}</span>
               </div>
             ))}
           </div>
@@ -561,7 +484,7 @@ export function SpriteAnimator() {
 
         <div className="border-t-2 border-dashed border-ink-800/15 pt-4">
           <p className="text-xs font-hand text-ink-500 leading-relaxed">
-            Piece 3: Play/Stop + FPS + walk poses. Each frame shows the matching skeleton pose.
+            Onion skin now loops: on the last frame you see frame 1 in blue; on the first frame you see the last frame in green.
           </p>
         </div>
       </div>
