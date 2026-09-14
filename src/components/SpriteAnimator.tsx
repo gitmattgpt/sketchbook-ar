@@ -1,52 +1,60 @@
-import { useRef, useState, useCallback } from 'react';
-import { Plus, Trash2, Layers, Brush, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useRef, useState, useCallback, useEffect } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import type { SpriteFrame } from '@/types';
 
 const CANVAS_SIZE = 128;
+
+const DEFAULT_FRAME_NAMES = ['Contact L', 'Pass L', 'Contact R', 'Pass R'];
 
 function createBlankFrame(name: string): SpriteFrame {
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_SIZE;
   canvas.height = CANVAS_SIZE;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(247, 243, 232, 0.9)';
-  ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-  return { id: `frame-${Date.now()}`, imageData: canvas.toDataURL(), name };
+  // Transparent background – white base layer will sit underneath later
+  ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+  return {
+    id: `frame-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    imageData: canvas.toDataURL('image/png'),
+    name,
+  };
+}
+
+function createInitialFrames(): SpriteFrame[] {
+  return DEFAULT_FRAME_NAMES.map((name) => createBlankFrame(name));
 }
 
 export function SpriteAnimator() {
-  const [frames, setFrames] = useState<SpriteFrame[]>([createBlankFrame('Frame 1')]);
+  const [frames, setFrames] = useState<SpriteFrame[]>(createInitialFrames);
   const [activeIdx, setActiveIdx] = useState(0);
   const [brushSize, setBrushSize] = useState(3);
-  const [showOnionSkin, setShowOnionSkin] = useState(true);
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
 
-  const loadFrame = useCallback((idx: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
+  // Load the active frame onto the canvas whenever selection changes
+  const loadFrame = useCallback(
+    (idx: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !frames[idx]) return;
+      const ctx = canvas.getContext('2d')!;
 
-    ctx.fillStyle = 'rgba(247, 243, 232, 0.95)';
-    ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      // Clear to transparent
+      ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
-    if (showOnionSkin && idx > 0) {
-      const prev = new Image();
-      prev.onload = () => {
-        ctx.globalAlpha = 0.25;
-        ctx.drawImage(prev, 0, 0);
-        ctx.globalAlpha = 1;
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0);
       };
-      prev.src = frames[idx - 1].imageData;
-    }
+      img.src = frames[idx].imageData;
+    },
+    [frames]
+  );
 
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0);
-    };
-    img.src = frames[idx].imageData;
-  }, [frames, showOnionSkin]);
+  // Initial load + when active frame changes
+  useEffect(() => {
+    loadFrame(activeIdx);
+  }, [activeIdx, loadFrame]);
 
   const getCanvasPos = (e: React.PointerEvent) => {
     const canvas = canvasRef.current!;
@@ -61,6 +69,7 @@ export function SpriteAnimator() {
 
   const startDraw = (e: React.PointerEvent) => {
     e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     setIsDrawing(true);
     lastPos.current = getCanvasPos(e);
     draw(e);
@@ -91,9 +100,10 @@ export function SpriteAnimator() {
     if (!isDrawing) return;
     setIsDrawing(false);
     lastPos.current = null;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const data = canvas.toDataURL();
+    const data = canvas.toDataURL('image/png');
     setFrames((prev) => {
       const next = [...prev];
       next[activeIdx] = { ...next[activeIdx], imageData: data };
@@ -101,15 +111,34 @@ export function SpriteAnimator() {
     });
   };
 
+  const selectFrame = (idx: number) => {
+    // Save current canvas before switching
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const data = canvas.toDataURL('image/png');
+      setFrames((prev) => {
+        const next = [...prev];
+        next[activeIdx] = { ...next[activeIdx], imageData: data };
+        return next;
+      });
+    }
+    setActiveIdx(idx);
+  };
+
   const addFrame = () => {
-    setFrames((prev) => [...prev, createBlankFrame(`Frame ${prev.length + 1}`)]);
+    const name = `Frame ${frames.length + 1}`;
+    setFrames((prev) => [...prev, createBlankFrame(name)]);
     setActiveIdx(frames.length);
   };
 
   const deleteFrame = (idx: number) => {
     if (frames.length <= 1) return;
     setFrames((prev) => prev.filter((_, i) => i !== idx));
-    setActiveIdx(Math.max(0, idx - 1));
+    setActiveIdx((prev) => {
+      if (idx < prev) return prev - 1;
+      if (idx === prev) return Math.max(0, prev - 1);
+      return prev;
+    });
   };
 
   return (
@@ -118,18 +147,19 @@ export function SpriteAnimator() {
         <header className="space-y-1">
           <h2 className="text-2xl font-script font-bold text-ink-800">Sprite Animator</h2>
           <p className="text-sm font-hand text-ink-500">
-            Draw custom animation frames for your character. Onion skin shows the previous frame as a ghost.
+            Draw frames for your character walk cycle. Select a frame, then draw.
           </p>
         </header>
 
+        {/* Drawing canvas */}
         <div className="relative bg-paper-100 border-2 border-ink-800/30 rounded-lg p-3 shadow-inner">
           <div className="relative" style={{ paddingBottom: '100%' }}>
             <canvas
               ref={canvasRef}
               width={CANVAS_SIZE}
               height={CANVAS_SIZE}
-              className="absolute inset-0 w-full h-full rounded touch-none cursor-crosshair"
-              onPointerDown={(e) => { setActiveIdx(activeIdx); loadFrame(activeIdx); startDraw(e); }}
+              className="absolute inset-0 w-full h-full rounded touch-none cursor-crosshair bg-white"
+              onPointerDown={startDraw}
               onPointerMove={draw}
               onPointerUp={endDraw}
               onPointerLeave={endDraw}
@@ -137,6 +167,7 @@ export function SpriteAnimator() {
           </div>
         </div>
 
+        {/* Brush size */}
         <div className="flex items-center gap-3">
           <span className="text-xs font-hand font-bold text-ink-700 shrink-0">Brush</span>
           <input
@@ -150,23 +181,12 @@ export function SpriteAnimator() {
           <span className="text-xs font-hand text-ink-600 tabular-nums w-6 text-right">{brushSize}</span>
         </div>
 
-        <button
-          onClick={() => setShowOnionSkin(!showOnionSkin)}
-          className={`w-full flex items-center justify-center gap-2 p-2.5 border-2 rounded-lg transition-colors ${
-            showOnionSkin
-              ? 'border-ink-800 bg-ink-800/10 text-ink-800'
-              : 'border-ink-800/20 text-ink-500'
-          }`}
-        >
-          <Layers size={16} />
-          <span className="text-sm font-hand font-bold">
-            Onion Skin {showOnionSkin ? 'On' : 'Off'}
-          </span>
-        </button>
-
+        {/* Frame list */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h3 className="font-hand font-bold text-ink-700 text-sm">Frames ({frames.length})</h3>
+            <h3 className="font-hand font-bold text-ink-700 text-sm">
+              Frames ({frames.length})
+            </h3>
             <button
               onClick={addFrame}
               className="flex items-center gap-1 text-sm font-hand font-bold text-ink-700 active:scale-95 transition-transform"
@@ -184,19 +204,26 @@ export function SpriteAnimator() {
                     ? 'border-ink-800 scale-105 shadow-md'
                     : 'border-ink-800/20'
                 }`}
-                onClick={() => { setActiveIdx(idx); loadFrame(idx); }}
+                onClick={() => selectFrame(idx)}
               >
-                <img src={frame.imageData} alt={frame.name} className="w-16 h-16 block bg-paper-100" />
+                <img
+                  src={frame.imageData}
+                  alt={frame.name}
+                  className="w-16 h-16 block bg-white"
+                />
                 {frames.length > 1 && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); deleteFrame(idx); }}
-                    className="absolute top-0.5 right-0.5 bg-paper-100/80 rounded-full p-0.5 active:scale-90"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteFrame(idx);
+                    }}
+                    className="absolute top-0.5 right-0.5 bg-paper-100/90 rounded-full p-0.5 active:scale-90"
                   >
                     <Trash2 size={10} className="text-red-500" />
                   </button>
                 )}
-                <span className="absolute bottom-0 left-0 right-0 text-[8px] font-hand text-center bg-paper-100/70 py-0.5">
-                  {idx + 1}
+                <span className="absolute bottom-0 left-0 right-0 text-[8px] font-hand text-center bg-paper-100/80 py-0.5 truncate px-0.5">
+                  {frame.name}
                 </span>
               </div>
             ))}
@@ -205,8 +232,7 @@ export function SpriteAnimator() {
 
         <div className="border-t-2 border-dashed border-ink-800/15 pt-4">
           <p className="text-xs font-hand text-ink-500 leading-relaxed">
-            Phase 3 will add timeline scrubbing, playback preview, sprite sheet export,
-            and automatic rigging of hand-drawn characters onto the physics stickman.
+            Piece 1 – Foundation. Next: onion skin, trace, guides, play controls, and walk templates.
           </p>
         </div>
       </div>
