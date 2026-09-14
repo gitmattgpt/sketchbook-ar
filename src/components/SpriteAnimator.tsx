@@ -1,37 +1,68 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Plus, Trash2, Eraser, Pencil, Layers } from 'lucide-react';
+import { Plus, Trash2, Eraser, Pencil, Layers, Play, Square } from 'lucide-react';
 import type { SpriteFrame } from '@/types';
 
 const SIZE_OPTIONS = [128, 192, 256] as const;
 type CanvasSize = (typeof SIZE_OPTIONS)[number];
+const FPS_OPTIONS = [4, 6, 8, 12, 24] as const;
 
 const DEFAULT_FRAME_NAMES = ['Contact L', 'Pass L', 'Contact R', 'Pass R'];
 
-// ─── Simple stickman skeleton (normalized 0–1) ───
 interface Joint { x: number; y: number }
+type Pose = Record<string, Joint>;
 
-const IDLE_POSE: Record<string, Joint> = {
-  head:   { x: 0.50, y: 0.16 },
-  neck:   { x: 0.50, y: 0.26 },
-  torso:  { x: 0.50, y: 0.48 },
-  lShoulder: { x: 0.40, y: 0.30 },
-  rShoulder: { x: 0.60, y: 0.30 },
-  lElbow: { x: 0.34, y: 0.42 },
-  rElbow: { x: 0.66, y: 0.42 },
-  lHand:  { x: 0.30, y: 0.54 },
-  rHand:  { x: 0.70, y: 0.54 },
-  lHip:   { x: 0.45, y: 0.55 },
-  rHip:   { x: 0.55, y: 0.55 },
-  lKnee:  { x: 0.43, y: 0.72 },
-  rKnee:  { x: 0.57, y: 0.72 },
-  lFoot:  { x: 0.40, y: 0.90 },
-  rFoot:  { x: 0.60, y: 0.90 },
-};
+// ─── Walk-cycle poses (normalized 0–1) ───
+const WALK_POSES: Pose[] = [
+  // 0 Contact L – left foot forward, right foot back
+  {
+    head: { x: 0.50, y: 0.15 }, neck: { x: 0.50, y: 0.25 }, torso: { x: 0.50, y: 0.46 },
+    lShoulder: { x: 0.40, y: 0.29 }, rShoulder: { x: 0.60, y: 0.29 },
+    lElbow: { x: 0.32, y: 0.40 }, rElbow: { x: 0.70, y: 0.40 },
+    lHand: { x: 0.28, y: 0.52 }, rHand: { x: 0.76, y: 0.50 },
+    lHip: { x: 0.44, y: 0.54 }, rHip: { x: 0.56, y: 0.54 },
+    lKnee: { x: 0.36, y: 0.70 }, rKnee: { x: 0.64, y: 0.70 },
+    lFoot: { x: 0.28, y: 0.90 }, rFoot: { x: 0.72, y: 0.88 },
+  },
+  // 1 Pass L – left leg passing under body
+  {
+    head: { x: 0.50, y: 0.14 }, neck: { x: 0.50, y: 0.24 }, torso: { x: 0.50, y: 0.45 },
+    lShoulder: { x: 0.41, y: 0.28 }, rShoulder: { x: 0.59, y: 0.28 },
+    lElbow: { x: 0.36, y: 0.40 }, rElbow: { x: 0.66, y: 0.38 },
+    lHand: { x: 0.34, y: 0.52 }, rHand: { x: 0.72, y: 0.48 },
+    lHip: { x: 0.46, y: 0.53 }, rHip: { x: 0.54, y: 0.53 },
+    lKnee: { x: 0.48, y: 0.68 }, rKnee: { x: 0.58, y: 0.72 },
+    lFoot: { x: 0.48, y: 0.86 }, rFoot: { x: 0.62, y: 0.90 },
+  },
+  // 2 Contact R – right foot forward
+  {
+    head: { x: 0.50, y: 0.15 }, neck: { x: 0.50, y: 0.25 }, torso: { x: 0.50, y: 0.46 },
+    lShoulder: { x: 0.40, y: 0.29 }, rShoulder: { x: 0.60, y: 0.29 },
+    lElbow: { x: 0.30, y: 0.40 }, rElbow: { x: 0.68, y: 0.40 },
+    lHand: { x: 0.24, y: 0.50 }, rHand: { x: 0.72, y: 0.52 },
+    lHip: { x: 0.44, y: 0.54 }, rHip: { x: 0.56, y: 0.54 },
+    lKnee: { x: 0.36, y: 0.70 }, rKnee: { x: 0.64, y: 0.70 },
+    lFoot: { x: 0.28, y: 0.88 }, rFoot: { x: 0.72, y: 0.90 },
+  },
+  // 3 Pass R – right leg passing
+  {
+    head: { x: 0.50, y: 0.14 }, neck: { x: 0.50, y: 0.24 }, torso: { x: 0.50, y: 0.45 },
+    lShoulder: { x: 0.41, y: 0.28 }, rShoulder: { x: 0.59, y: 0.28 },
+    lElbow: { x: 0.34, y: 0.38 }, rElbow: { x: 0.64, y: 0.40 },
+    lHand: { x: 0.28, y: 0.48 }, rHand: { x: 0.66, y: 0.52 },
+    lHip: { x: 0.46, y: 0.53 }, rHip: { x: 0.54, y: 0.53 },
+    lKnee: { x: 0.42, y: 0.72 }, rKnee: { x: 0.52, y: 0.68 },
+    lFoot: { x: 0.38, y: 0.90 }, rFoot: { x: 0.52, y: 0.86 },
+  },
+];
+
+function getPoseForFrame(idx: number): Pose {
+  return WALK_POSES[idx % WALK_POSES.length];
+}
 
 function drawStickman(
   ctx: CanvasRenderingContext2D,
   size: number,
-  pose: Record<string, Joint>,
+  pose: Pose,
   color: string,
   lineWidth: number,
   alpha = 1
@@ -56,29 +87,21 @@ function drawStickman(
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = color;
-  ctx.fillStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // Head
   const headR = size * 0.07;
   ctx.beginPath();
   ctx.arc(head.x, head.y, headR, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Spine
   line(ctx, neck, torso);
-  // Shoulders
   line(ctx, ls, rs);
-  // Arms
   line(ctx, ls, le); line(ctx, le, lh);
   line(ctx, rs, re); line(ctx, re, rh);
-  // Hips
   line(ctx, lhip, rhip);
-  // Connect torso to hips
   line(ctx, torso, { x: (lhip.x + rhip.x) / 2, y: (lhip.y + rhip.y) / 2 });
-  // Legs
   line(ctx, lhip, lk); line(ctx, lk, lf);
   line(ctx, rhip, rk); line(ctx, rk, rf);
 
@@ -92,13 +115,7 @@ function line(ctx: CanvasRenderingContext2D, a: { x: number; y: number }, b: { x
   ctx.stroke();
 }
 
-/** Tint an image data URL with a solid color while preserving alpha */
-function tintImage(
-  src: string,
-  color: string,
-  alpha: number,
-  size: number
-): Promise<HTMLCanvasElement> {
+function tintImage(src: string, color: string, alpha: number, size: number): Promise<HTMLCanvasElement> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -107,14 +124,9 @@ function tintImage(
       c.height = size;
       const ctx = c.getContext('2d')!;
       ctx.drawImage(img, 0, 0, size, size);
-
-      // Colorize non-transparent pixels
       ctx.globalCompositeOperation = 'source-atop';
-      ctx.globalAlpha = 1;
       ctx.fillStyle = color;
       ctx.fillRect(0, 0, size, size);
-
-      // Apply overall opacity
       const out = document.createElement('canvas');
       out.width = size;
       out.height = size;
@@ -158,17 +170,32 @@ export function SpriteAnimator() {
   const [tool, setTool] = useState<'brush' | 'eraser'>('brush');
   const [isDrawing, setIsDrawing] = useState(false);
 
-  // Onion skin settings
   const [onionEnabled, setOnionEnabled] = useState(true);
-  const [onionBefore, setOnionBefore] = useState(1); // 0 = off
-  const [onionAfter, setOnionAfter] = useState(1);   // 0 = off
+  const [onionBefore, setOnionBefore] = useState(1);
+  const [onionAfter, setOnionAfter] = useState(1);
   const [showSkeleton, setShowSkeleton] = useState(true);
+
+  // Playback
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [fps, setFps] = useState(8);
+  const playRef = useRef<number | null>(null);
 
   const guideRef = useRef<HTMLCanvasElement>(null);
   const drawRef = useRef<HTMLCanvasElement>(null);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
 
-  // ─── Redraw guide layer (skeleton + onion) ───
+  // Persist current drawing into frames state
+  const persistCurrent = useCallback(() => {
+    const canvas = drawRef.current;
+    if (!canvas) return;
+    const data = canvas.toDataURL('image/png');
+    setFrames((prev) => {
+      const next = [...prev];
+      next[activeIdx] = { ...next[activeIdx], imageData: data };
+      return next;
+    });
+  }, [activeIdx]);
+
   const redrawGuide = useCallback(async () => {
     const guide = guideRef.current;
     if (!guide) return;
@@ -179,7 +206,6 @@ export function SpriteAnimator() {
     const ctx = guide.getContext('2d')!;
     ctx.clearRect(0, 0, canvasSize, canvasSize);
 
-    // Onion: previous frames (green)
     if (onionEnabled && onionBefore > 0) {
       for (let i = 1; i <= onionBefore; i++) {
         const idx = activeIdx - i;
@@ -188,8 +214,6 @@ export function SpriteAnimator() {
         ctx.drawImage(tinted, 0, 0);
       }
     }
-
-    // Onion: next frames (blue)
     if (onionEnabled && onionAfter > 0) {
       for (let i = 1; i <= onionAfter; i++) {
         const idx = activeIdx + i;
@@ -198,31 +222,24 @@ export function SpriteAnimator() {
         ctx.drawImage(tinted, 0, 0);
       }
     }
-
-    // Skeleton guide (light gray)
     if (showSkeleton) {
-      drawStickman(ctx, canvasSize, IDLE_POSE, '#9ca3af', Math.max(1.5, canvasSize / 64), 0.55);
+      const pose = getPoseForFrame(activeIdx);
+      drawStickman(ctx, canvasSize, pose, '#9ca3af', Math.max(1.5, canvasSize / 64), 0.55);
     }
   }, [activeIdx, frames, canvasSize, onionEnabled, onionBefore, onionAfter, showSkeleton]);
 
-  // ─── Load active frame onto drawing canvas ───
   const loadFrame = useCallback(
     (idx: number) => {
       const draw = drawRef.current;
       if (!draw || !frames[idx]) return;
-
       if (draw.width !== canvasSize) {
         draw.width = canvasSize;
         draw.height = canvasSize;
       }
-
       const ctx = draw.getContext('2d')!;
       ctx.clearRect(0, 0, canvasSize, canvasSize);
-
       const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0, canvasSize, canvasSize);
-      };
+      img.onload = () => ctx.drawImage(img, 0, 0, canvasSize, canvasSize);
       img.src = frames[idx].imageData;
     },
     [frames, canvasSize]
@@ -233,9 +250,34 @@ export function SpriteAnimator() {
     redrawGuide();
   }, [activeIdx, canvasSize, loadFrame, redrawGuide]);
 
-  // ─── Size change ───
+  // Playback loop
+  useEffect(() => {
+    if (!isPlaying) {
+      if (playRef.current) {
+        clearInterval(playRef.current);
+        playRef.current = null;
+      }
+      return;
+    }
+    const ms = 1000 / fps;
+    playRef.current = window.setInterval(() => {
+      setActiveIdx((prev) => (prev + 1) % frames.length);
+    }, ms);
+    return () => {
+      if (playRef.current) clearInterval(playRef.current);
+    };
+  }, [isPlaying, fps, frames.length]);
+
+  const togglePlay = () => {
+    if (!isPlaying) {
+      persistCurrent();
+    }
+    setIsPlaying((p) => !p);
+  };
+
   const handleSizeChange = (newSize: CanvasSize) => {
     if (newSize === canvasSize) return;
+    setIsPlaying(false);
     setFrames((prev) =>
       prev.map((frame) => {
         const out = document.createElement('canvas');
@@ -249,7 +291,6 @@ export function SpriteAnimator() {
     setCanvasSize(newSize);
   };
 
-  // ─── Pointer ───
   const getPos = (e: React.PointerEvent) => {
     const canvas = drawRef.current!;
     const rect = canvas.getBoundingClientRect();
@@ -260,6 +301,7 @@ export function SpriteAnimator() {
   };
 
   const startDraw = (e: React.PointerEvent) => {
+    if (isPlaying) return;
     e.preventDefault();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     setIsDrawing(true);
@@ -273,11 +315,9 @@ export function SpriteAnimator() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
     const pos = getPos(e);
-
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = brushSize;
-
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
       ctx.strokeStyle = 'rgba(0,0,0,1)';
@@ -285,7 +325,6 @@ export function SpriteAnimator() {
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = '#2b2b2b';
     }
-
     if (lastPos.current) {
       ctx.beginPath();
       ctx.moveTo(lastPos.current.x, lastPos.current.y);
@@ -299,12 +338,9 @@ export function SpriteAnimator() {
     if (!isDrawing) return;
     setIsDrawing(false);
     lastPos.current = null;
-
     const canvas = drawRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
-    ctx.globalCompositeOperation = 'source-over';
-
+    canvas.getContext('2d')!.globalCompositeOperation = 'source-over';
     const data = canvas.toDataURL('image/png');
     setFrames((prev) => {
       const next = [...prev];
@@ -314,19 +350,13 @@ export function SpriteAnimator() {
   };
 
   const selectFrame = (idx: number) => {
-    const canvas = drawRef.current;
-    if (canvas) {
-      const data = canvas.toDataURL('image/png');
-      setFrames((prev) => {
-        const next = [...prev];
-        next[activeIdx] = { ...next[activeIdx], imageData: data };
-        return next;
-      });
-    }
+    if (isPlaying) setIsPlaying(false);
+    persistCurrent();
     setActiveIdx(idx);
   };
 
   const addFrame = () => {
+    if (isPlaying) setIsPlaying(false);
     const name = `Frame ${frames.length + 1}`;
     setFrames((prev) => [...prev, createBlankFrame(name, canvasSize)]);
     setActiveIdx(frames.length);
@@ -334,6 +364,7 @@ export function SpriteAnimator() {
 
   const deleteFrame = (idx: number) => {
     if (frames.length <= 1) return;
+    if (isPlaying) setIsPlaying(false);
     setFrames((prev) => prev.filter((_, i) => i !== idx));
     setActiveIdx((prev) => {
       if (idx < prev) return prev - 1;
@@ -348,7 +379,7 @@ export function SpriteAnimator() {
         <header className="space-y-1">
           <h2 className="text-2xl font-script font-bold text-ink-800">Sprite Animator</h2>
           <p className="text-sm font-hand text-ink-500">
-            Skeleton guide + onion skin. Draw over the template.
+            Walk poses + playback. Draw over the skeleton, then hit Play.
           </p>
         </header>
 
@@ -380,6 +411,38 @@ export function SpriteAnimator() {
           </div>
         </div>
 
+        {/* Play / Stop + FPS */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={togglePlay}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg border-2 font-hand font-bold text-sm transition-colors ${
+              isPlaying
+                ? 'border-red-500 bg-red-50 text-red-700'
+                : 'border-ink-800 bg-ink-800 text-white'
+            }`}
+          >
+            {isPlaying ? <Square size={14} /> : <Play size={14} />}
+            {isPlaying ? 'Stop' : 'Play'}
+          </button>
+
+          <div className="flex items-center gap-1.5 flex-1">
+            <span className="text-xs font-hand font-bold text-ink-600">FPS</span>
+            <select
+              value={fps}
+              onChange={(e) => setFps(Number(e.target.value))}
+              className="flex-1 border-2 border-ink-800/20 rounded-lg px-2 py-1.5 text-xs font-hand bg-white"
+            >
+              {FPS_OPTIONS.map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+          </div>
+
+          <span className="text-xs font-hand text-ink-500 tabular-nums">
+            {activeIdx + 1}/{frames.length}
+          </span>
+        </div>
+
         {/* Size */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
@@ -392,9 +455,7 @@ export function SpriteAnimator() {
                 key={s}
                 onClick={() => handleSizeChange(s)}
                 className={`flex-1 py-1.5 text-xs font-hand font-bold rounded-lg border-2 transition-colors ${
-                  canvasSize === s
-                    ? 'border-ink-800 bg-ink-800/10 text-ink-800'
-                    : 'border-ink-800/20 text-ink-500'
+                  canvasSize === s ? 'border-ink-800 bg-ink-800/10 text-ink-800' : 'border-ink-800/20 text-ink-500'
                 }`}
               >
                 {s}
@@ -423,68 +484,41 @@ export function SpriteAnimator() {
               <Eraser size={16} />
             </button>
           </div>
-          <input
-            type="range"
-            min={1}
-            max={12}
-            value={brushSize}
-            onChange={(e) => setBrushSize(Number(e.target.value))}
-            className="flex-1"
-          />
+          <input type="range" min={1} max={12} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="flex-1" />
           <span className="text-xs font-hand text-ink-600 tabular-nums w-6 text-right">{brushSize}</span>
         </div>
 
-        {/* Onion + Skeleton toggles */}
+        {/* Onion + Skeleton */}
         <div className="space-y-2">
           <button
             onClick={() => setOnionEnabled(!onionEnabled)}
             className={`w-full flex items-center justify-center gap-2 p-2.5 border-2 rounded-lg transition-colors ${
-              onionEnabled
-                ? 'border-green-600 bg-green-50 text-green-800'
-                : 'border-ink-800/20 text-ink-500'
+              onionEnabled ? 'border-green-600 bg-green-50 text-green-800' : 'border-ink-800/20 text-ink-500'
             }`}
           >
             <Layers size={16} />
-            <span className="text-sm font-hand font-bold">
-              Onion Skin {onionEnabled ? 'On' : 'Off'}
-            </span>
+            <span className="text-sm font-hand font-bold">Onion Skin {onionEnabled ? 'On' : 'Off'}</span>
           </button>
-
           {onionEnabled && (
             <div className="flex gap-3 text-xs font-hand">
               <label className="flex items-center gap-1.5 flex-1">
                 <span className="text-green-700 font-bold">Before</span>
-                <select
-                  value={onionBefore}
-                  onChange={(e) => setOnionBefore(Number(e.target.value))}
-                  className="flex-1 border border-ink-800/20 rounded px-1 py-0.5 bg-white"
-                >
-                  {[0, 1, 2, 3].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
+                <select value={onionBefore} onChange={(e) => setOnionBefore(Number(e.target.value))} className="flex-1 border border-ink-800/20 rounded px-1 py-0.5 bg-white">
+                  {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
               <label className="flex items-center gap-1.5 flex-1">
                 <span className="text-blue-600 font-bold">After</span>
-                <select
-                  value={onionAfter}
-                  onChange={(e) => setOnionAfter(Number(e.target.value))}
-                  className="flex-1 border border-ink-800/20 rounded px-1 py-0.5 bg-white"
-                >
-                  {[0, 1, 2, 3].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
+                <select value={onionAfter} onChange={(e) => setOnionAfter(Number(e.target.value))} className="flex-1 border border-ink-800/20 rounded px-1 py-0.5 bg-white">
+                  {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
             </div>
           )}
-
           <button
             onClick={() => setShowSkeleton(!showSkeleton)}
             className={`w-full flex items-center justify-center gap-2 p-2 border-2 rounded-lg transition-colors text-sm font-hand font-bold ${
-              showSkeleton
-                ? 'border-ink-800/40 bg-ink-800/5 text-ink-700'
-                : 'border-ink-800/20 text-ink-500'
+              showSkeleton ? 'border-ink-800/40 bg-ink-800/5 text-ink-700' : 'border-ink-800/20 text-ink-500'
             }`}
           >
             Skeleton Guide {showSkeleton ? 'On' : 'Off'}
@@ -495,14 +529,10 @@ export function SpriteAnimator() {
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="font-hand font-bold text-ink-700 text-sm">Frames ({frames.length})</h3>
-            <button
-              onClick={addFrame}
-              className="flex items-center gap-1 text-sm font-hand font-bold text-ink-700 active:scale-95 transition-transform"
-            >
+            <button onClick={addFrame} className="flex items-center gap-1 text-sm font-hand font-bold text-ink-700 active:scale-95 transition-transform">
               <Plus size={16} /> Add
             </button>
           </div>
-
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
             {frames.map((frame, idx) => (
               <div
@@ -512,18 +542,10 @@ export function SpriteAnimator() {
                 }`}
                 onClick={() => selectFrame(idx)}
               >
-                <img
-                  src={frame.imageData}
-                  alt={frame.name}
-                  className="w-16 h-16 block bg-white"
-                  style={{ imageRendering: 'pixelated' }}
-                />
+                <img src={frame.imageData} alt={frame.name} className="w-16 h-16 block bg-white" style={{ imageRendering: 'pixelated' }} />
                 {frames.length > 1 && (
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteFrame(idx);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); deleteFrame(idx); }}
                     className="absolute top-0.5 right-0.5 bg-paper-100/90 rounded-full p-0.5 active:scale-90"
                   >
                     <Trash2 size={10} className="text-red-500" />
@@ -539,8 +561,7 @@ export function SpriteAnimator() {
 
         <div className="border-t-2 border-dashed border-ink-800/15 pt-4">
           <p className="text-xs font-hand text-ink-500 leading-relaxed">
-            Piece 2 done. Green = previous frames, Blue = next frames. Skeleton guide is light gray.
-            Next: procedural walk poses + timeline playback.
+            Piece 3: Play/Stop + FPS + walk poses. Each frame shows the matching skeleton pose.
           </p>
         </div>
       </div>
