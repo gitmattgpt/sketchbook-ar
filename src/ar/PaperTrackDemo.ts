@@ -1,31 +1,43 @@
 /**
  * AR track-test demo.
  *
- * IMPORTANT: The tracker is compiled from the ORIGINAL camera capture
- * (full-color letter photo, typically 792×1024), NEVER from the
- * thresholded / pixel-expanded collision grid (198×256).
- *
- * Resolution notes:
- * - Capture source: CAPTURE_WIDTH × CAPTURE_HEIGHT (792 × 1024)
- * - Game collision grid: GRID 198 × 256 (separate pipeline only)
- * - For compile speed we may downscale the ORIGINAL photo so the
- *   longest edge is ≤ TRACK_MAX_EDGE while keeping aspect and color.
+ * Tracker source = ORIGINAL camera capture (full-color ~792x1024), NEVER the
+ * thresholded / expanded collision grid (198x256).
  */
 
 import * as THREE from 'three';
 
-// MindAR ships without perfect TS types for all entry points
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-expect-error mind-ar has no bundled types for this path
-import { MindARThree } from 'mind-ar/dist/mindar-image-three.prod.js';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-expect-error mind-ar compiler entry
-import { Compiler } from 'mind-ar/dist/mindar-image.prod.js';
-
-/** Max edge length used when compiling (still from original photo, not grid). */
 export const TRACK_MAX_EDGE = 640;
 
 export type TrackStatus = 'idle' | 'compiling' | 'searching' | 'found' | 'lost' | 'error';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyMind = any;
+
+let mindModules: { MindARThree: AnyMind; Compiler: AnyMind } | null = null;
+
+async function loadMindAR(): Promise<{ MindARThree: AnyMind; Compiler: AnyMind }> {
+  if (mindModules) return mindModules;
+
+  // Prefer ESM builds from jsDelivr (avoids npm install / node-gyp issues)
+  const threeMod = await import(
+    /* @vite-ignore */
+    'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.esm.js'
+  );
+  const imageMod = await import(
+    /* @vite-ignore */
+    'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.esm.js'
+  );
+
+  const MindARThree = threeMod.MindARThree ?? threeMod.default?.MindARThree ?? threeMod.default;
+  const Compiler = imageMod.Compiler ?? imageMod.default?.Compiler ?? imageMod.default;
+
+  if (!MindARThree || !Compiler) {
+    throw new Error('MindAR modules failed to load from CDN');
+  }
+  mindModules = { MindARThree, Compiler };
+  return mindModules;
+}
 
 function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -37,10 +49,7 @@ function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
-/**
- * Resize ORIGINAL capture for compile only — never use processed grid.
- * Preserves aspect ratio and full color information from the photo.
- */
+/** Resize ORIGINAL photo only (still full color, not grid). */
 function prepareTrackImage(img: HTMLImageElement): HTMLCanvasElement {
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
@@ -50,8 +59,7 @@ function prepareTrackImage(img: HTMLImageElement): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = outW;
   canvas.height = outH;
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(img, 0, 0, outW, outH);
+  canvas.getContext('2d')!.drawImage(img, 0, 0, outW, outH);
   return canvas;
 }
 
@@ -66,9 +74,9 @@ function canvasToImage(canvas: HTMLCanvasElement): Promise<HTMLImageElement> {
 
 export class PaperTrackDemo {
   private container: HTMLElement | null = null;
-  private mindarThree: InstanceType<typeof MindARThree> | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private mindarThree: any = null;
   private cube: THREE.Mesh | null = null;
-  private anchorGroup: THREE.Group | null = null;
   private raf = 0;
   private mindBlobUrl: string | null = null;
   private running = false;
@@ -83,12 +91,9 @@ export class PaperTrackDemo {
     this.onStatus?.(s, detail);
   }
 
-  /**
-   * Compile tracker features from the ORIGINAL capture data URL
-   * (jpeg from camera crop — not threshold/grid).
-   */
   async compileFromOriginalCapture(originalCaptureDataUrl: string): Promise<ArrayBuffer> {
-    this.status('compiling', 'Building tracker from original photo…');
+    this.status('compiling', 'Building tracker from original photo...');
+    const { Compiler } = await loadMindAR();
     const full = await loadImageFromDataUrl(originalCaptureDataUrl);
     const prepared = prepareTrackImage(full);
     const trackImg = await canvasToImage(prepared);
@@ -97,8 +102,7 @@ export class PaperTrackDemo {
     await compiler.compileImageTargets([trackImg], (progress: number) => {
       this.status('compiling', `Compiling tracker ${Math.round(progress)}%`);
     });
-    const buffer: ArrayBuffer = await compiler.exportData();
-    return buffer;
+    return await compiler.exportData();
   }
 
   async start(container: HTMLElement, originalCaptureDataUrl: string): Promise<void> {
@@ -107,6 +111,7 @@ export class PaperTrackDemo {
     this.running = true;
 
     try {
+      const { MindARThree } = await loadMindAR();
       const buffer = await this.compileFromOriginalCapture(originalCaptureDataUrl);
       if (!this.running) return;
 
@@ -121,20 +126,18 @@ export class PaperTrackDemo {
       });
 
       const anchor = this.mindarThree.addAnchor(0);
-      this.anchorGroup = anchor.group;
 
-      // Cube: clear faces so axis is obvious; spins on Y (vertical)
       const geometry = new THREE.BoxGeometry(0.35, 0.35, 0.35);
       const materials = [
-        new THREE.MeshBasicMaterial({ color: 0xe74c3c }), // +X red
-        new THREE.MeshBasicMaterial({ color: 0xc0392b }), // -X
-        new THREE.MeshBasicMaterial({ color: 0x2ecc71 }), // +Y green (up)
-        new THREE.MeshBasicMaterial({ color: 0x27ae60 }), // -Y
-        new THREE.MeshBasicMaterial({ color: 0x3498db }), // +Z blue
-        new THREE.MeshBasicMaterial({ color: 0x2980b9 }), // -Z
+        new THREE.MeshBasicMaterial({ color: 0xe74c3c }),
+        new THREE.MeshBasicMaterial({ color: 0xc0392b }),
+        new THREE.MeshBasicMaterial({ color: 0x2ecc71 }), // +Y up (green)
+        new THREE.MeshBasicMaterial({ color: 0x27ae60 }),
+        new THREE.MeshBasicMaterial({ color: 0x3498db }),
+        new THREE.MeshBasicMaterial({ color: 0x2980b9 }),
       ];
       this.cube = new THREE.Mesh(geometry, materials);
-      this.cube.position.set(0, 0.2, 0); // slightly above paper plane
+      this.cube.position.set(0, 0.2, 0);
       this.cube.visible = false;
       anchor.group.add(this.cube);
 
@@ -156,9 +159,7 @@ export class PaperTrackDemo {
       const tick = () => {
         if (!this.running) return;
         this.raf = requestAnimationFrame(tick);
-        if (this.cube && this.cube.visible) {
-          this.cube.rotation.y += 0.03; // continuous Y-axis spin
-        }
+        if (this.cube?.visible) this.cube.rotation.y += 0.03;
         renderer.render(scene, camera);
       };
       tick();
@@ -177,13 +178,12 @@ export class PaperTrackDemo {
       this.raf = 0;
     }
     try {
-      await this.mindarThree?.stop();
+      await this.mindarThree?.stop?.();
     } catch {
       /* ignore */
     }
     this.mindarThree = null;
     this.cube = null;
-    this.anchorGroup = null;
     if (this.mindBlobUrl) {
       URL.revokeObjectURL(this.mindBlobUrl);
       this.mindBlobUrl = null;
