@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import {
-  Camera, RefreshCw, Play, Loader2, Bug, CheckCircle2, XCircle,
-  SlidersHorizontal, RotateCcw, Pause, ChevronLeft, ChevronRight,
+  Camera, Loader2, Bug, CheckCircle2, XCircle,
+  SlidersHorizontal, RotateCcw, Pause, Play, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import type { CollisionGrid, TrackingState, DebugInfo, LevelConfig } from '@/types';
 import {
@@ -31,8 +31,8 @@ interface CameraARViewProps {
 type ControlId = 'left' | 'right' | 'run' | 'jump';
 
 interface ControlPos {
-  x: number; // % of viewport width
-  y: number; // % of viewport height
+  x: number;
+  y: number;
 }
 
 const DEFAULT_LAYOUT: Record<ControlId, ControlPos> = {
@@ -68,23 +68,28 @@ export function CameraARView({
   const isFirstProcessRef = useRef(true);
   const restoredRef = useRef(false);
   const fpsRef = useRef<{ frames: number; lastTime: number }>({ frames: 0, lastTime: performance.now() });
+  const heldRef = useRef({ left: false, right: false, run: false, jump: false });
+  const layoutModeRef = useRef(false);
 
   const [trackingState, setTrackingState] = useState<TrackingState>('idle');
   const [showDebug, setShowDebug] = useState(false);
-  const [showThreshold, setShowThreshold] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const [hasGrid, setHasGrid] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
 
-  // Play controls
   const [playerScale, setPlayerScale] = useState(1);
   const [worldScale, setWorldScale] = useState(1);
+  const [expandRadius, setExpandRadius] = useState(0);
   const [layoutMode, setLayoutMode] = useState(false);
   const [layout, setLayout] = useState<Record<ControlId, ControlPos>>(loadLayout);
   const [held, setHeld] = useState({ left: false, right: false, run: false, jump: false });
   const dragRef = useRef<{ id: ControlId; startX: number; startY: number; origX: number; origY: number } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+
+  layoutModeRef.current = layoutMode;
+  heldRef.current = held;
 
   const startCamera = useCallback(async () => {
     setError(null);
@@ -122,11 +127,11 @@ export function CameraARView({
     manager.setOnPositionUpdate((pos) => onDebugUpdate({ characterPos: pos }));
     manager.setPlayerScale(playerScale);
     manager.setWorldScale(worldScale);
+    manager.setLevelPoints(levelConfig.spawn, levelConfig.goal);
     phaserRef.current = manager;
     return manager;
-  }, [onDebugUpdate, playerScale, worldScale]);
+  }, [onDebugUpdate, playerScale, worldScale, levelConfig.spawn, levelConfig.goal]);
 
-  // Push scale changes to Phaser
   useEffect(() => {
     phaserRef.current?.setPlayerScale(playerScale);
   }, [playerScale]);
@@ -139,30 +144,44 @@ export function CameraARView({
     phaserRef.current?.setPaused(layoutMode);
   }, [layoutMode]);
 
-  // Push held buttons to Phaser every frame while playing
   useEffect(() => {
-    if (!hasGrid || layoutMode) return;
-    const id = window.setInterval(() => {
-      phaserRef.current?.setExternalInput(held.left, held.right, held.jump, held.run);
-      if (held.jump) setHeld((h) => ({ ...h, jump: false })); // jump is edge-triggered
-    }, 16);
-    return () => clearInterval(id);
-  }, [hasGrid, layoutMode, held]);
+    phaserRef.current?.setLevelPoints(levelConfig.spawn, levelConfig.goal);
+  }, [levelConfig.spawn, levelConfig.goal]);
+
+  // Direct input to Phaser each frame (low latency)
+  useEffect(() => {
+    if (!hasGrid) return;
+    let raf = 0;
+    const tick = () => {
+      if (!layoutModeRef.current) {
+        const h = heldRef.current;
+        phaserRef.current?.setExternalInput(h.left, h.right, h.jump, h.run);
+        if (h.jump) {
+          heldRef.current = { ...h, jump: false };
+          setHeld((prev) => (prev.jump ? { ...prev, jump: false } : prev));
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [hasGrid]);
 
   const processCanvas = useCallback(
-    async (sourceCanvas: HTMLCanvasElement, thresh: number, forceRespawn: boolean) => {
+    async (sourceCanvas: HTMLCanvasElement, thresh: number, expand: number, forceRespawn: boolean) => {
       const downsampled = downsampleToLetter(sourceCanvas, GRID_WIDTH, GRID_HEIGHT);
-      const result = extractCollisionGrid(downsampled, thresh, GRID_WIDTH, GRID_HEIGHT);
+      const result = extractCollisionGrid(downsampled, thresh, GRID_WIDTH, GRID_HEIGHT, expand);
       const solidCount = countSolidPixels(result.grid);
       onDebugUpdate({ gridResolution: `${GRID_WIDTH}×${GRID_HEIGHT}`, solidPixels: solidCount, threshold: thresh });
       const captureUrl = sourceCanvas.toDataURL('image/jpeg', 0.85);
       onGridReady(result.grid, result.previewCanvas.toDataURL(), captureUrl);
       const manager = await ensurePhaser();
+      manager?.setLevelPoints(levelConfig.spawn, levelConfig.goal);
       manager?.setCollisionGrid(result.grid, result.gridCanvas, forceRespawn);
       setHasGrid(true);
       setTrackingState('tracking');
     },
-    [onDebugUpdate, onGridReady, ensurePhaser]
+    [onDebugUpdate, onGridReady, ensurePhaser, levelConfig.spawn, levelConfig.goal]
   );
 
   useEffect(() => {
@@ -176,7 +195,7 @@ export function CameraARView({
       canvas.getContext('2d')!.drawImage(img, 0, 0);
       lastCaptureCanvasRef.current = canvas;
       isFirstProcessRef.current = true;
-      await processCanvas(canvas, threshold, true);
+      await processCanvas(canvas, threshold, expandRadius, true);
       isFirstProcessRef.current = false;
     };
     img.src = savedCaptureDataUrl;
@@ -211,21 +230,22 @@ export function CameraARView({
       canvas.getContext('2d')!.drawImage(video, offX, offY, cropW, cropH, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
       lastCaptureCanvasRef.current = canvas;
       isFirstProcessRef.current = true;
-      await processCanvas(canvas, threshold, true);
+      await processCanvas(canvas, threshold, expandRadius, true);
       isFirstProcessRef.current = false;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Capture failed');
     } finally {
       setIsCapturing(false);
     }
-  }, [threshold, processCanvas]);
+  }, [threshold, expandRadius, processCanvas]);
 
+  // Reprocess when threshold or expand changes (no retake)
   useEffect(() => {
     if (hasGrid && lastCaptureCanvasRef.current && !isFirstProcessRef.current) {
-      processCanvas(lastCaptureCanvasRef.current, threshold, false);
+      processCanvas(lastCaptureCanvasRef.current, threshold, expandRadius, false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threshold]);
+  }, [threshold, expandRadius]);
 
   const retakePhoto = useCallback(() => {
     if (phaserRef.current) {
@@ -234,7 +254,7 @@ export function CameraARView({
     }
     if (gameContainerRef.current) gameContainerRef.current.innerHTML = '';
     setHasGrid(false);
-    setShowThreshold(false);
+    setShowFilters(false);
     setLayoutMode(false);
     setTrackingState('searching');
     lastCaptureCanvasRef.current = null;
@@ -265,10 +285,13 @@ export function CameraARView({
     return () => cancelAnimationFrame(rafId);
   }, [cameraReady, hasGrid, trackingState, onDebugUpdate]);
 
-  // ─── Touch control helpers ───
   const press = (id: ControlId, down: boolean) => {
-    if (layoutMode) return;
-    setHeld((h) => ({ ...h, [id]: down }));
+    if (layoutModeRef.current) return;
+    setHeld((h) => {
+      const next = { ...h, [id]: down };
+      heldRef.current = next;
+      return next;
+    });
   };
 
   const onControlPointerDown = (id: ControlId, e: React.PointerEvent) => {
@@ -276,8 +299,6 @@ export function CameraARView({
     e.stopPropagation();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     if (layoutMode) {
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (!rect) return;
       dragRef.current = {
         id,
         startX: e.clientX,
@@ -320,10 +341,10 @@ export function CameraARView({
   const toggleLayoutMode = () => {
     setLayoutMode((m) => {
       const next = !m;
-      if (!next) {
-        localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
-      }
-      setHeld({ left: false, right: false, run: false, jump: false });
+      if (!next) localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+      const cleared = { left: false, right: false, run: false, jump: false };
+      heldRef.current = cleared;
+      setHeld(cleared);
       return next;
     });
   };
@@ -335,20 +356,16 @@ export function CameraARView({
     lost: { text: 'Lost', icon: XCircle, color: 'bg-red-600/80' },
   }[trackingState];
 
-  const controlBtn = (
-    id: ControlId,
-    label: React.ReactNode,
-    extraClass = ''
-  ) => {
+  const controlBtn = (id: ControlId, label: React.ReactNode) => {
     const pos = layout[id];
     const isHeld = held[id];
     return (
       <button
         key={id}
         type="button"
-        className={`absolute w-14 h-14 rounded-full border-2 border-white/40 flex items-center justify-center text-white font-hand font-bold text-xs select-none touch-none transition-transform ${
-          layoutMode ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-transparent cursor-move' : ''
-        } ${isHeld && !layoutMode ? 'scale-95 bg-white/40' : 'bg-black/50'} ${extraClass}`}
+        className={`absolute w-14 h-14 rounded-full border-2 border-white/40 flex items-center justify-center text-white font-hand font-bold text-xs select-none touch-none ${
+          layoutMode ? 'ring-2 ring-amber-400 cursor-move' : ''
+        } ${isHeld && !layoutMode ? 'scale-95 bg-white/40' : 'bg-black/50'}`}
         style={{
           left: `${pos.x}%`,
           top: `${pos.y}%`,
@@ -393,7 +410,6 @@ export function CameraARView({
           style={{ width: '100%', height: '100%' }}
         />
 
-        {/* On-screen controls */}
         {hasGrid && (
           <div className="absolute inset-0 z-[15] pointer-events-none">
             <div className="pointer-events-auto absolute inset-0">
@@ -405,93 +421,110 @@ export function CameraARView({
           </div>
         )}
 
-        {/* Layout mode banner */}
         {layoutMode && (
           <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-amber-500/90 text-ink-900 text-xs font-hand font-bold px-3 py-1.5 rounded-full">
-            Drag buttons to reposition · tap Pause again to resume
+            Drag buttons · tap Pause to resume
           </div>
         )}
 
-        <div className="absolute top-3 left-3 right-3 flex items-center justify-between safe-top z-20">
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-paper-100 text-xs font-hand font-bold ${trackingBadge.color}`}>
-            <trackingBadge.icon size={14} className={trackingState === 'searching' ? 'animate-spin' : ''} />
-            {trackingBadge.text}
-          </div>
-          <div className="flex items-center gap-2">
-            {hasGrid && (
-              <>
-                <button
-                  onClick={toggleLayoutMode}
-                  className={`p-2 rounded-full transition-colors ${
-                    layoutMode ? 'bg-amber-500 text-ink-900' : 'bg-ink-900/50 text-paper-100/70'
-                  }`}
-                  aria-label={layoutMode ? 'Resume play' : 'Pause & move controls'}
-                >
-                  {layoutMode ? <Play size={18} /> : <Pause size={18} />}
-                </button>
-                <button
-                  onClick={() => setShowThreshold(!showThreshold)}
-                  className={`p-2 rounded-full transition-colors ${showThreshold ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'}`}
-                  aria-label="Toggle threshold"
-                >
-                  <SlidersHorizontal size={18} />
-                </button>
-              </>
-            )}
-            <button
-              onClick={() => setShowDebug(!showDebug)}
-              className={`p-2 rounded-full transition-colors ${showDebug ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'}`}
-              aria-label="Toggle debug"
-            >
-              <Bug size={18} />
-            </button>
-          </div>
+        {/* Top bar: Camera | Restart | Tracking | Pause | Filters | Debug */}
+        <div className="absolute top-2 left-2 right-2 flex items-center z-20 gap-1.5">
+          {hasGrid ? (
+            <>
+              <button
+                onClick={retakePhoto}
+                className="p-2 rounded-full bg-ink-900/60 text-paper-100"
+                aria-label="Retake"
+              >
+                <Camera size={18} />
+              </button>
+              <button
+                onClick={restartPlayer}
+                className="p-2 rounded-full bg-ink-900/60 text-paper-100"
+                aria-label="Restart"
+              >
+                <RotateCcw size={18} />
+              </button>
+              <div className="flex-1 flex justify-center">
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-paper-100 text-xs font-hand font-bold ${trackingBadge.color}`}>
+                  <trackingBadge.icon size={14} className={trackingState === 'searching' ? 'animate-spin' : ''} />
+                  {trackingBadge.text}
+                </div>
+              </div>
+              <button
+                onClick={toggleLayoutMode}
+                className={`p-2 rounded-full ${layoutMode ? 'bg-amber-500 text-ink-900' : 'bg-ink-900/60 text-paper-100'}`}
+                aria-label={layoutMode ? 'Resume' : 'Pause layout'}
+              >
+                {layoutMode ? <Play size={18} /> : <Pause size={18} />}
+              </button>
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={`p-2 rounded-full ${showFilters ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/60 text-paper-100'}`}
+                aria-label="Filters"
+              >
+                <SlidersHorizontal size={18} />
+              </button>
+            </>
+          ) : (
+            <div className="flex-1 flex justify-center">
+              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-paper-100 text-xs font-hand font-bold ${trackingBadge.color}`}>
+                <trackingBadge.icon size={14} className={trackingState === 'searching' ? 'animate-spin' : ''} />
+                {trackingBadge.text}
+              </div>
+            </div>
+          )}
+          <button
+            onClick={() => setShowDebug(!showDebug)}
+            className={`p-2 rounded-full ${showDebug ? 'bg-ink-800 text-paper-100' : 'bg-ink-900/50 text-paper-100/70'}`}
+            aria-label="Debug"
+          >
+            <Bug size={18} />
+          </button>
         </div>
 
         {showDebug && (
-          <div className="absolute top-14 left-3 right-3 max-w-xs animate-fade-in z-20">
+          <div className="absolute top-14 left-3 right-3 max-w-xs z-20">
             <div className="bg-paper-300/70 backdrop-blur-md border-2 border-ink-800/20 rounded-lg p-3 space-y-2 text-xs font-hand">
               <div className="flex justify-between text-ink-700"><span>Camera:</span><span className="font-bold">{cameraReady ? 'ON' : 'OFF'}</span></div>
               <div className="flex justify-between text-ink-700"><span>Threshold:</span><span className="font-bold tabular-nums">{threshold}</span></div>
-              <div className="flex justify-between text-ink-700"><span>Player size:</span><span className="font-bold tabular-nums">{playerScale.toFixed(1)}×</span></div>
-              <div className="flex justify-between text-ink-700"><span>World scale:</span><span className="font-bold tabular-nums">{worldScale.toFixed(1)}×</span></div>
+              <div className="flex justify-between text-ink-700"><span>Line expand:</span><span className="font-bold tabular-nums">{expandRadius}</span></div>
+              <div className="flex justify-between text-ink-700"><span>Player:</span><span className="font-bold tabular-nums">{playerScale.toFixed(1)}×</span></div>
+              <div className="flex justify-between text-ink-700"><span>World:</span><span className="font-bold tabular-nums">{worldScale.toFixed(1)}×</span></div>
             </div>
           </div>
         )}
 
-        {showThreshold && hasGrid && (
-          <div className="absolute bottom-28 left-3 right-3 z-20 animate-fade-in">
+        {showFilters && hasGrid && (
+          <div className="absolute bottom-4 left-3 right-3 z-20">
             <div className="bg-paper-200/95 backdrop-blur-md border-2 border-ink-800/25 rounded-xl p-4 space-y-3 shadow-lg">
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex justify-between">
                   <label className="text-sm font-hand font-bold text-ink-800">Threshold</label>
                   <span className="text-sm font-hand font-bold text-ink-700 tabular-nums">{threshold}</span>
                 </div>
                 <input type="range" min={20} max={200} value={threshold} onChange={(e) => onThresholdChange(Number(e.target.value))} className="w-full" />
               </div>
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex justify-between">
+                  <label className="text-sm font-hand font-bold text-ink-800">Line thickness (pixel expand)</label>
+                  <span className="text-sm font-hand font-bold text-ink-700 tabular-nums">{expandRadius}</span>
+                </div>
+                <input type="range" min={0} max={5} step={1} value={expandRadius} onChange={(e) => setExpandRadius(Number(e.target.value))} className="w-full" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between">
                   <label className="text-sm font-hand font-bold text-ink-800">Player size / hitbox</label>
                   <span className="text-sm font-hand font-bold text-ink-700 tabular-nums">{playerScale.toFixed(1)}×</span>
                 </div>
-                <input
-                  type="range" min={0.5} max={2.5} step={0.1}
-                  value={playerScale}
-                  onChange={(e) => setPlayerScale(Number(e.target.value))}
-                  className="w-full"
-                />
+                <input type="range" min={0.5} max={2.5} step={0.1} value={playerScale} onChange={(e) => setPlayerScale(Number(e.target.value))} className="w-full" />
               </div>
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex justify-between">
                   <label className="text-sm font-hand font-bold text-ink-800">World scale (speed & jump)</label>
                   <span className="text-sm font-hand font-bold text-ink-700 tabular-nums">{worldScale.toFixed(1)}×</span>
                 </div>
-                <input
-                  type="range" min={0.4} max={2} step={0.1}
-                  value={worldScale}
-                  onChange={(e) => setWorldScale(Number(e.target.value))}
-                  className="w-full"
-                />
+                <input type="range" min={0.4} max={2} step={0.1} value={worldScale} onChange={(e) => setWorldScale(Number(e.target.value))} className="w-full" />
               </div>
             </div>
           </div>
@@ -514,40 +547,16 @@ export function CameraARView({
             </div>
           </div>
         )}
-      </div>
 
-      <div className="bg-ink-900 safe-bottom px-4 py-3 flex flex-col gap-2 z-10">
-        {hasGrid && !showThreshold && (
-          <div className="flex items-center gap-3 px-1">
-            <span className="text-paper-100/60 text-[10px] font-hand w-10 shrink-0">Size</span>
-            <input type="range" min={0.5} max={2.5} step={0.1} value={playerScale} onChange={(e) => setPlayerScale(Number(e.target.value))} className="flex-1" />
-            <span className="text-paper-100/60 text-[10px] font-hand w-10 shrink-0">World</span>
-            <input type="range" min={0.4} max={2} step={0.1} value={worldScale} onChange={(e) => setWorldScale(Number(e.target.value))} className="flex-1" />
-          </div>
-        )}
-        <div className="flex items-center justify-center gap-2">
-          {!hasGrid ? (
+        {/* Capture only when no map — bottom clear otherwise */}
+        {!hasGrid && (
+          <div className="absolute bottom-6 left-0 right-0 flex justify-center z-10">
             <button onClick={capturePhoto} disabled={!cameraReady || isCapturing} className="btn-sketch flex items-center gap-2 disabled:opacity-40">
               {isCapturing ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />}
               <span>{isCapturing ? 'Processing…' : 'Capture Paper'}</span>
             </button>
-          ) : (
-            <>
-              <button onClick={retakePhoto} className="btn-sketch-outline flex items-center gap-1.5 text-paper-100 border-paper-100 text-sm px-3">
-                <RefreshCw size={16} /> Retake
-              </button>
-              <button onClick={restartPlayer} className="btn-sketch flex items-center gap-1.5 text-sm px-3">
-                <RotateCcw size={16} /> Restart
-              </button>
-              <button onClick={toggleLayoutMode} className={`flex items-center gap-1.5 text-sm px-3 rounded-lg border-2 font-hand font-bold ${
-                layoutMode ? 'border-amber-400 bg-amber-500 text-ink-900' : 'border-paper-100/40 text-paper-100/80'
-              }`}>
-                {layoutMode ? <Play size={14} /> : <Pause size={14} />}
-                {layoutMode ? 'Resume' : 'Layout'}
-              </button>
-            </>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
