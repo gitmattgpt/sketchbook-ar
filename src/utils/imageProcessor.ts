@@ -3,7 +3,7 @@ import type { CollisionGrid, ProcessedImageResult } from '@/types';
 /** Letter paper 8.5×11 aspect — higher res for close-up detail */
 export const GRID_WIDTH = 198;
 export const GRID_HEIGHT = 256;
-export const CAPTURE_WIDTH = 792;  // 4× grid for sharper source
+export const CAPTURE_WIDTH = 792;
 export const CAPTURE_HEIGHT = 1024;
 
 export function downsampleToLetter(
@@ -20,19 +20,16 @@ export function downsampleToLetter(
   const sy = source instanceof HTMLVideoElement ? source.videoHeight : (source as HTMLCanvasElement).height;
   if (!sx || !sy) return canvas;
 
-  // Center-crop to letter aspect (portrait 8.5:11)
   const targetAspect = outW / outH;
   const srcAspect = sx / sy;
   let cropW: number, cropH: number, offX: number, offY: number;
 
   if (srcAspect > targetAspect) {
-    // Source wider — crop sides
     cropH = sy;
     cropW = sy * targetAspect;
     offX = (sx - cropW) / 2;
     offY = 0;
   } else {
-    // Source taller — crop top/bottom
     cropW = sx;
     cropH = sx / targetAspect;
     offX = 0;
@@ -51,17 +48,44 @@ export function downsampleToGrid(
   return downsampleToLetter(source, targetSize, targetSize);
 }
 
+/**
+ * Expand every solid pixel into a disk of the given radius (grid cells).
+ * Applied after threshold so only black ink is thickened / gaps filled.
+ */
+function expandSolidPixels(grid: Uint8Array, width: number, height: number, radius: number): Uint8Array {
+  if (radius <= 0) return grid;
+  const r = Math.min(5, Math.max(0, Math.floor(radius)));
+  const out = new Uint8Array(grid.length);
+  const r2 = r * r;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (grid[y * width + x] !== 1) continue;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx * dx + dy * dy > r2) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          out[ny * width + nx] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export function extractCollisionGrid(
   source: HTMLCanvasElement,
   threshold: number,
   targetW = GRID_WIDTH,
-  targetH = GRID_HEIGHT
+  targetH = GRID_HEIGHT,
+  expandRadius = 0
 ): ProcessedImageResult {
   const ctx = source.getContext('2d')!;
   const imageData = ctx.getImageData(0, 0, source.width, source.height);
   const data = imageData.data;
 
-  const grid = new Uint8Array(targetW * targetH);
+  let grid = new Uint8Array(targetW * targetH);
 
   const scaleX = source.width / targetW;
   const scaleY = source.height / targetH;
@@ -94,6 +118,10 @@ export function extractCollisionGrid(
       const brightness = (r + g + b) / 3;
       grid[gy * targetW + gx] = brightness < threshold ? 1 : 0;
     }
+  }
+
+  if (expandRadius > 0) {
+    grid = expandSolidPixels(grid, targetW, targetH, expandRadius);
   }
 
   const previewCanvas = document.createElement('canvas');
