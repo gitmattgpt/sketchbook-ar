@@ -13,14 +13,17 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "lucide-react": "^0.446.0",
+    "mind-ar": "^1.2.5",
     "phaser": "^3.90.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "three": "^0.160.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.160.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.18",
     "eslint": "^9.9.1",
