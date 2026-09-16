@@ -5,14 +5,12 @@ import { GRID_WIDTH, GRID_HEIGHT } from '@/utils/imageProcessor';
 const GAME_WIDTH = GRID_WIDTH;
 const GAME_HEIGHT = GRID_HEIGHT;
 
-// Base physics (multiplied by worldScale at runtime)
 const BASE_GRAVITY = 0.14;
 const BASE_MOVE_SPEED = 0.7;
 const BASE_RUN_SPEED = 1.25;
 const BASE_JUMP_FORCE = -2.8;
 const BASE_MAX_FALL = 4;
 
-// Base visual + hitbox sizes (multiplied by playerScale)
 const BASE_SPRITE_W = 9;
 const BASE_SPRITE_H = 11;
 const BASE_CHAR_W = 5;
@@ -39,6 +37,26 @@ function generateStickmanTexture(scene: Phaser.Scene, key: string, frame: number
   graphics.beginPath(); graphics.moveTo(12, 20); graphics.lineTo(12 + legSwing, 26); graphics.strokePath();
   graphics.generateTexture(key, 24, 28);
   graphics.destroy();
+}
+
+function generateFlagTexture(scene: Phaser.Scene): void {
+  if (scene.textures.exists('goal-flag')) return;
+  const g = scene.make.graphics({ x: 0, y: 0 }, false);
+  // pole
+  g.lineStyle(2, 0x2b2b2b, 1);
+  g.beginPath(); g.moveTo(6, 4); g.lineTo(6, 26); g.strokePath();
+  // flag triangle
+  g.fillStyle(0xf1c40f, 1);
+  g.beginPath();
+  g.moveTo(6, 4);
+  g.lineTo(20, 10);
+  g.lineTo(6, 16);
+  g.closePath();
+  g.fillPath();
+  g.lineStyle(1.5, 0x2b2b2b, 1);
+  g.strokePath();
+  g.generateTexture('goal-flag', 24, 28);
+  g.destroy();
 }
 
 function inkOnlyDataUrl(src: string): Promise<string> {
@@ -71,6 +89,7 @@ function inkOnlyDataUrl(src: string): Promise<string> {
 export class GameScene extends Phaser.Scene {
   private stickman: Phaser.GameObjects.Container | null = null;
   private stickmanSprite: Phaser.GameObjects.Image | null = null;
+  private flagSprite: Phaser.GameObjects.Image | null = null;
   private gridOverlay: Phaser.GameObjects.Image | null = null;
   private gridTexture: Phaser.Textures.CanvasTexture | null = null;
   private collisionGrid: CollisionGrid | null = null;
@@ -90,6 +109,9 @@ export class GameScene extends Phaser.Scene {
   private playerScale = 1;
   private worldScale = 1;
   private paused = false;
+  private spawnPoint: { x: number; y: number } | null = null;
+  private goalPoint: { x: number; y: number } | null = null;
+  private goalCooldown = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -99,6 +121,7 @@ export class GameScene extends Phaser.Scene {
     generateStickmanTexture(this, 'stickman-idle', 0);
     generateStickmanTexture(this, 'stickman-walk1', 1);
     generateStickmanTexture(this, 'stickman-walk2', 2);
+    generateFlagTexture(this);
 
     this.cameras.main.setBackgroundColor('rgba(247, 243, 232, 0.94)');
 
@@ -108,6 +131,11 @@ export class GameScene extends Phaser.Scene {
       this.gridOverlay.setAlpha(0.9);
       this.gridOverlay.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     }
+
+    this.flagSprite = this.add.image(0, 0, 'goal-flag');
+    this.flagSprite.setVisible(false);
+    this.flagSprite.setDepth(9);
+    this.applyFlagSize();
 
     this.stickmanSprite = this.add.image(0, 0, 'stickman-idle');
     this.applySpriteSize();
@@ -135,12 +163,19 @@ export class GameScene extends Phaser.Scene {
     this.stickmanSprite?.setDisplaySize(w, h);
   }
 
+  private applyFlagSize() {
+    const w = BASE_SPRITE_W * this.playerScale;
+    const h = BASE_SPRITE_H * this.playerScale;
+    this.flagSprite?.setDisplaySize(w, h);
+  }
+
   private getCharW() { return BASE_CHAR_W * this.playerScale; }
   private getCharH() { return BASE_CHAR_H * this.playerScale; }
 
   setPlayerScale(scale: number) {
     this.playerScale = Math.max(0.5, Math.min(3, scale));
     this.applySpriteSize();
+    this.applyFlagSize();
   }
 
   setWorldScale(scale: number) {
@@ -165,6 +200,21 @@ export class GameScene extends Phaser.Scene {
     this.inputRight = right;
     if (jump) this.inputJump = true;
     this.inputRun = run;
+  }
+
+  setLevelPoints(spawn: { x: number; y: number } | null, goal: { x: number; y: number } | null) {
+    this.spawnPoint = spawn;
+    this.goalPoint = goal;
+    this.goalCooldown = false;
+    if (this.flagSprite) {
+      if (goal) {
+        this.flagSprite.setPosition(goal.x, goal.y);
+        this.flagSprite.setVisible(true);
+        this.applyFlagSize();
+      } else {
+        this.flagSprite.setVisible(false);
+      }
+    }
   }
 
   private async loadCustomWalkFromStorage() {
@@ -236,19 +286,29 @@ export class GameScene extends Phaser.Scene {
 
   private spawnStickman() {
     if (!this.collisionGrid || !this.stickman) return;
-    const cx = Math.floor(this.collisionGrid.width / 2);
-    let spawnY = 20;
-    for (let y = 0; y < this.collisionGrid.height; y++) {
-      if (isSolid(this.collisionGrid, cx, y)) {
-        spawnY = Math.max(4, y - 8);
-        break;
+    let sx: number;
+    let sy: number;
+    if (this.spawnPoint) {
+      sx = this.spawnPoint.x;
+      sy = this.spawnPoint.y;
+    } else {
+      const cx = Math.floor(this.collisionGrid.width / 2);
+      let spawnY = 20;
+      for (let y = 0; y < this.collisionGrid.height; y++) {
+        if (isSolid(this.collisionGrid, cx, y)) {
+          spawnY = Math.max(4, y - 8);
+          break;
+        }
       }
+      sx = cx;
+      sy = spawnY;
     }
-    this.stickman.x = cx;
-    this.stickman.y = spawnY;
+    this.stickman.x = sx;
+    this.stickman.y = sy;
     this.vx = 0;
     this.vy = 0;
     this.grounded = false;
+    this.goalCooldown = false;
   }
 
   restartSpawn() {
@@ -257,6 +317,21 @@ export class GameScene extends Phaser.Scene {
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
     this.onPosUpdate = cb;
+  }
+
+  private checkGoalOverlap() {
+    if (!this.stickman || !this.goalPoint || this.goalCooldown) return;
+    const charW = this.getCharW();
+    const charH = this.getCharH();
+    // Goal hitbox same size as player
+    const gw = charW;
+    const gh = charH;
+    const dx = Math.abs(this.stickman.x - this.goalPoint.x);
+    const dy = Math.abs(this.stickman.y - this.goalPoint.y);
+    if (dx < (charW + gw) / 2 && dy < (charH + gh) / 2) {
+      this.goalCooldown = true;
+      this.spawnStickman();
+    }
   }
 
   update() {
@@ -304,6 +379,8 @@ export class GameScene extends Phaser.Scene {
 
     this.stickman.x = Phaser.Math.Clamp(this.stickman.x, 4, this.collisionGrid.width - 4);
     this.stickman.y = Phaser.Math.Clamp(this.stickman.y, 4, this.collisionGrid.height - 4);
+
+    this.checkGoalOverlap();
 
     if (this.grounded && (this.inputLeft || this.inputRight)) {
       if (!this.walkAnim) {
@@ -424,6 +501,10 @@ export class PhaserGameManager {
 
   setExternalInput(left: boolean, right: boolean, jump: boolean, run: boolean) {
     this.scene?.setExternalInput(left, right, jump, run);
+  }
+
+  setLevelPoints(spawn: { x: number; y: number } | null, goal: { x: number; y: number } | null) {
+    this.scene?.setLevelPoints(spawn, goal);
   }
 
   reloadCustomWalk() {
