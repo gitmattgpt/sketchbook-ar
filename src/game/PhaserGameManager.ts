@@ -4,16 +4,19 @@ import { GRID_WIDTH, GRID_HEIGHT } from '@/utils/imageProcessor';
 
 const GAME_WIDTH = GRID_WIDTH;
 const GAME_HEIGHT = GRID_HEIGHT;
-const GRAVITY = 0.14;
-const MOVE_SPEED = 0.7;
-const JUMP_FORCE = -2.8;
-const MAX_FALL = 4;
 
-/** On-screen stickman size — smaller, closer to earlier proportions */
-const SPRITE_W = 9;
-const SPRITE_H = 11;
-const CHAR_W = 5;
-const CHAR_H = 8;
+// Base physics (multiplied by worldScale at runtime)
+const BASE_GRAVITY = 0.14;
+const BASE_MOVE_SPEED = 0.7;
+const BASE_RUN_SPEED = 1.25;
+const BASE_JUMP_FORCE = -2.8;
+const BASE_MAX_FALL = 4;
+
+// Base visual + hitbox sizes (multiplied by playerScale)
+const BASE_SPRITE_W = 9;
+const BASE_SPRITE_H = 11;
+const BASE_CHAR_W = 5;
+const BASE_CHAR_H = 8;
 
 function isSolid(grid: CollisionGrid | null, x: number, y: number): boolean {
   if (!grid) return false;
@@ -23,57 +26,27 @@ function isSolid(grid: CollisionGrid | null, x: number, y: number): boolean {
   return grid.data[iy * grid.width + ix] === 1;
 }
 
-/** Built-in stickman: transparent bg, black lines only */
 function generateStickmanTexture(scene: Phaser.Scene, key: string, frame: number): void {
   const graphics = scene.make.graphics({ x: 0, y: 0 }, false);
-  // no fill — transparent canvas
   graphics.lineStyle(2, 0x2b2b2b, 1);
-
   graphics.strokeCircle(12, 6, 4);
-
-  graphics.beginPath();
-  graphics.moveTo(12, 10);
-  graphics.lineTo(12, 20);
-  graphics.strokePath();
-
+  graphics.beginPath(); graphics.moveTo(12, 10); graphics.lineTo(12, 20); graphics.strokePath();
   const armSwing = frame === 0 ? 0 : frame === 1 ? 5 : -5;
   const legSwing = frame === 0 ? 0 : frame === 1 ? 6 : -6;
-
-  graphics.beginPath();
-  graphics.moveTo(12, 13);
-  graphics.lineTo(12 - armSwing, 19);
-  graphics.strokePath();
-
-  graphics.beginPath();
-  graphics.moveTo(12, 13);
-  graphics.lineTo(12 + armSwing, 19);
-  graphics.strokePath();
-
-  graphics.beginPath();
-  graphics.moveTo(12, 20);
-  graphics.lineTo(12 - legSwing, 26);
-  graphics.strokePath();
-
-  graphics.beginPath();
-  graphics.moveTo(12, 20);
-  graphics.lineTo(12 + legSwing, 26);
-  graphics.strokePath();
-
+  graphics.beginPath(); graphics.moveTo(12, 13); graphics.lineTo(12 - armSwing, 19); graphics.strokePath();
+  graphics.beginPath(); graphics.moveTo(12, 13); graphics.lineTo(12 + armSwing, 19); graphics.strokePath();
+  graphics.beginPath(); graphics.moveTo(12, 20); graphics.lineTo(12 - legSwing, 26); graphics.strokePath();
+  graphics.beginPath(); graphics.moveTo(12, 20); graphics.lineTo(12 + legSwing, 26); graphics.strokePath();
   graphics.generateTexture(key, 24, 28);
   graphics.destroy();
 }
 
-/**
- * Strip paper/cream background → fully transparent;
- * keep only dark ink as opaque black. No shadows / highlights.
- */
 function inkOnlyDataUrl(src: string): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
-      c.width = img.width;
-      c.height = img.height;
+      c.width = img.width; c.height = img.height;
       const ctx = c.getContext('2d')!;
       ctx.clearRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0);
@@ -81,18 +54,10 @@ function inkOnlyDataUrl(src: string): Promise<string> {
       const d = id.data;
       for (let i = 0; i < d.length; i += 4) {
         const brightness = (d[i] + d[i + 1] + d[i + 2]) / 3;
-        // Paper / light pixels → fully transparent
         if (brightness > 200 || d[i + 3] < 15) {
-          d[i] = 0;
-          d[i + 1] = 0;
-          d[i + 2] = 0;
-          d[i + 3] = 0;
+          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
         } else {
-          // Dark ink → solid black, full alpha (no soft edges / sheen)
-          d[i] = 43;
-          d[i + 1] = 43;
-          d[i + 2] = 43;
-          d[i + 3] = 255;
+          d[i] = 43; d[i + 1] = 43; d[i + 2] = 43; d[i + 3] = 255;
         }
       }
       ctx.putImageData(id, 0, 0);
@@ -115,15 +80,16 @@ export class GameScene extends Phaser.Scene {
   private inputLeft = false;
   private inputRight = false;
   private inputJump = false;
+  private inputRun = false;
   private onPosUpdate: ((pos: { x: number; y: number }) => void) | null = null;
   private walkAnim: Phaser.Time.TimerEvent | null = null;
   private currentFrame = 0;
-  private leftZone: Phaser.GameObjects.Zone | null = null;
-  private rightZone: Phaser.GameObjects.Zone | null = null;
-  private centerZone: Phaser.GameObjects.Zone | null = null;
   private hasSpawned = false;
   private customWalkKeys: string[] = [];
   private useCustomWalk = false;
+  private playerScale = 1;
+  private worldScale = 1;
+  private paused = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -144,11 +110,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.stickmanSprite = this.add.image(0, 0, 'stickman-idle');
-    this.stickmanSprite.setDisplaySize(SPRITE_W, SPRITE_H);
+    this.applySpriteSize();
     this.stickman = this.add.container(GAME_WIDTH / 2, 24, [this.stickmanSprite]);
     this.stickman.setDepth(10);
-
-    this.setupInputZones();
 
     this.input.keyboard?.on('keydown-LEFT', () => { this.inputLeft = true; });
     this.input.keyboard?.on('keyup-LEFT', () => { this.inputLeft = false; });
@@ -156,12 +120,51 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keyup-RIGHT', () => { this.inputRight = false; });
     this.input.keyboard?.on('keydown-UP', () => { this.inputJump = true; });
     this.input.keyboard?.on('keydown-SPACE', () => { this.inputJump = true; });
+    this.input.keyboard?.on('keydown-SHIFT', () => { this.inputRun = true; });
+    this.input.keyboard?.on('keyup-SHIFT', () => { this.inputRun = false; });
 
     this.cameras.main.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
     this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
 
-    // Load custom walk async (transparent ink)
     this.loadCustomWalkFromStorage();
+  }
+
+  private applySpriteSize() {
+    const w = BASE_SPRITE_W * this.playerScale;
+    const h = BASE_SPRITE_H * this.playerScale;
+    this.stickmanSprite?.setDisplaySize(w, h);
+  }
+
+  private getCharW() { return BASE_CHAR_W * this.playerScale; }
+  private getCharH() { return BASE_CHAR_H * this.playerScale; }
+
+  setPlayerScale(scale: number) {
+    this.playerScale = Math.max(0.5, Math.min(3, scale));
+    this.applySpriteSize();
+  }
+
+  setWorldScale(scale: number) {
+    this.worldScale = Math.max(0.4, Math.min(2.5, scale));
+  }
+
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    if (paused) {
+      this.inputLeft = false;
+      this.inputRight = false;
+      this.inputJump = false;
+      this.inputRun = false;
+      this.vx = 0;
+      this.vy = 0;
+    }
+  }
+
+  setExternalInput(left: boolean, right: boolean, jump: boolean, run: boolean) {
+    if (this.paused) return;
+    this.inputLeft = left;
+    this.inputRight = right;
+    if (jump) this.inputJump = true;
+    this.inputRun = run;
   }
 
   private async loadCustomWalkFromStorage() {
@@ -182,11 +185,10 @@ export class GameScene extends Phaser.Scene {
       this.useCustomWalk = this.customWalkKeys.length > 0;
 
       if (this.stickmanSprite && this.useCustomWalk && this.customWalkKeys[0]) {
-        // Wait a tick for texture to register
         this.time.delayedCall(50, () => {
           if (this.textures.exists(this.customWalkKeys[0])) {
             this.stickmanSprite?.setTexture(this.customWalkKeys[0]);
-            this.stickmanSprite?.setDisplaySize(SPRITE_W, SPRITE_H);
+            this.applySpriteSize();
           }
         });
       }
@@ -197,25 +199,6 @@ export class GameScene extends Phaser.Scene {
 
   reloadCustomWalk() {
     this.loadCustomWalkFromStorage();
-  }
-
-  private setupInputZones() {
-    this.leftZone?.destroy();
-    this.rightZone?.destroy();
-    this.centerZone?.destroy();
-    this.leftZone = this.add.zone(0, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    this.leftZone.setInteractive();
-    this.leftZone.on('pointerdown', () => { this.inputLeft = true; });
-    this.leftZone.on('pointerup', () => { this.inputLeft = false; });
-    this.leftZone.on('pointerout', () => { this.inputLeft = false; });
-    this.rightZone = this.add.zone((GAME_WIDTH * 2) / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    this.rightZone.setInteractive();
-    this.rightZone.on('pointerdown', () => { this.inputRight = true; });
-    this.rightZone.on('pointerup', () => { this.inputRight = false; });
-    this.rightZone.on('pointerout', () => { this.inputRight = false; });
-    this.centerZone = this.add.zone(GAME_WIDTH / 3, 0, GAME_WIDTH / 3, GAME_HEIGHT).setOrigin(0, 0);
-    this.centerZone.setInteractive();
-    this.centerZone.on('pointerdown', () => { this.inputJump = true; });
   }
 
   setCollisionGrid(grid: CollisionGrid, gridCanvas: HTMLCanvasElement, forceRespawn = false) {
@@ -277,33 +260,41 @@ export class GameScene extends Phaser.Scene {
   }
 
   update() {
-    if (!this.stickman || !this.collisionGrid) return;
+    if (!this.stickman || !this.collisionGrid || this.paused) return;
+
+    const ws = this.worldScale;
+    const moveSpeed = (this.inputRun ? BASE_RUN_SPEED : BASE_MOVE_SPEED) * ws;
+    const gravity = BASE_GRAVITY * ws;
+    const jumpForce = BASE_JUMP_FORCE * ws;
+    const maxFall = BASE_MAX_FALL * ws;
+    const charW = this.getCharW();
+    const charH = this.getCharH();
 
     let targetVx = 0;
-    if (this.inputLeft) targetVx = -MOVE_SPEED;
-    if (this.inputRight) targetVx = MOVE_SPEED;
+    if (this.inputLeft) targetVx = -moveSpeed;
+    if (this.inputRight) targetVx = moveSpeed;
     this.vx = targetVx;
 
     if (this.inputJump && this.grounded) {
-      this.vy = JUMP_FORCE;
+      this.vy = jumpForce;
       this.grounded = false;
       this.inputJump = false;
     } else {
       this.inputJump = false;
     }
 
-    this.vy += GRAVITY;
-    if (this.vy > MAX_FALL) this.vy = MAX_FALL;
+    this.vy += gravity;
+    if (this.vy > maxFall) this.vy = maxFall;
 
     const newX = this.stickman.x + this.vx;
-    if (!this.checkCollision(newX, this.stickman.y, CHAR_W, CHAR_H)) {
+    if (!this.checkCollision(newX, this.stickman.y, charW, charH)) {
       this.stickman.x = newX;
     } else {
       this.vx = 0;
     }
 
     const newY = this.stickman.y + this.vy;
-    if (!this.checkCollision(this.stickman.x, newY, CHAR_W, CHAR_H)) {
+    if (!this.checkCollision(this.stickman.x, newY, charW, charH)) {
       this.stickman.y = newY;
       this.grounded = false;
     } else {
@@ -321,23 +312,22 @@ export class GameScene extends Phaser.Scene {
           const key = this.customWalkKeys[this.currentFrame];
           if (this.textures.exists(key)) {
             this.stickmanSprite?.setTexture(key);
-            this.stickmanSprite?.setDisplaySize(SPRITE_W, SPRITE_H);
+            this.applySpriteSize();
           }
         } else {
           this.currentFrame = this.currentFrame === 0 ? 1 : this.currentFrame === 1 ? 2 : 1;
           this.stickmanSprite?.setTexture(this.currentFrame === 1 ? 'stickman-walk1' : 'stickman-walk2');
-          this.stickmanSprite?.setDisplaySize(SPRITE_W, SPRITE_H);
+          this.applySpriteSize();
         }
-        this.walkAnim = this.time.delayedCall(120, () => {
-          this.walkAnim = null;
-        });
+        const animMs = this.inputRun ? 80 : 120;
+        this.walkAnim = this.time.delayedCall(animMs, () => { this.walkAnim = null; });
       }
     } else if (this.useCustomWalk && this.customWalkKeys[0] && this.textures.exists(this.customWalkKeys[0])) {
       this.stickmanSprite?.setTexture(this.customWalkKeys[0]);
-      this.stickmanSprite?.setDisplaySize(SPRITE_W, SPRITE_H);
+      this.applySpriteSize();
     } else {
       this.stickmanSprite?.setTexture('stickman-idle');
-      this.stickmanSprite?.setDisplaySize(SPRITE_W, SPRITE_H);
+      this.applySpriteSize();
     }
 
     if (this.inputLeft && !this.inputRight) this.stickmanSprite?.setFlipX(true);
@@ -353,13 +343,8 @@ export class GameScene extends Phaser.Scene {
     const top = y - h / 2;
     const bottom = y + h / 2;
     const checkPoints = [
-      [left, bottom],
-      [right, bottom],
-      [x, bottom],
-      [left, top],
-      [right, top],
-      [left, y],
-      [right, y],
+      [left, bottom], [right, bottom], [x, bottom],
+      [left, top], [right, top], [left, y], [right, y],
     ];
     for (const [px, py] of checkPoints) {
       if (isSolid(this.collisionGrid, px, py)) return true;
@@ -423,6 +408,22 @@ export class PhaserGameManager {
 
   setOnPositionUpdate(cb: (pos: { x: number; y: number }) => void) {
     this.scene?.setOnPositionUpdate(cb);
+  }
+
+  setPlayerScale(scale: number) {
+    this.scene?.setPlayerScale(scale);
+  }
+
+  setWorldScale(scale: number) {
+    this.scene?.setWorldScale(scale);
+  }
+
+  setPaused(paused: boolean) {
+    this.scene?.setPaused(paused);
+  }
+
+  setExternalInput(left: boolean, right: boolean, jump: boolean, run: boolean) {
+    this.scene?.setExternalInput(left, right, jump, run);
   }
 
   reloadCustomWalk() {
