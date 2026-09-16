@@ -143,24 +143,7 @@ export default function App() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-paper-100 overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-2 bg-paper-200 border-b-2 border-ink-800/15 safe-top">
-        <div className="flex items-center gap-2">
-          <BookOpen size={22} className="text-ink-800" strokeWidth={2.5} />
-          <div>
-            <h1 className="text-lg font-script font-bold text-ink-800 leading-none">Sketchbook AR</h1>
-            <p className="text-[10px] font-hand text-ink-500 leading-none mt-0.5">Paper Worlds</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {gridPreviewUrl && (
-            <span className="text-[10px] font-hand text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
-              Map saved
-            </span>
-          )}
-          <span className="text-[10px] font-hand text-ink-500">Phase 1</span>
-          <div className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse-soft" />
-        </div>
-      </header>
+      <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
 
       {showIntro && <IntroOverlay onClose={() => setShowIntro(false)} />}
 
@@ -182,18 +165,6 @@ export default function App() {
               threshold={threshold}
               onThresholdChange={handleThresholdChange}
             />
-            <div className="mt-3 p-3 bg-paper-300/60 border-2 border-ink-800/20 rounded-lg">
-              <h4 className="font-hand font-bold text-sm text-ink-800 mb-1">How to Play</h4>
-              <ol className="text-xs font-hand text-ink-600 space-y-1 list-decimal list-inside">
-                <li>Draw lines on paper with dark pencil/marker</li>
-                <li>Point camera at paper & tap "Capture Paper"</li>
-                <li>Adjust threshold to isolate your ink strokes</li>
-                <li>Tap screen sides to walk, center to jump</li>
-              </ol>
-              <p className="text-[10px] font-hand text-ink-500 mt-2">
-                Map stays when you switch tabs. Only Retake or a new capture replaces it.
-              </p>
-            </div>
           </div>
         </div>
 
@@ -210,7 +181,8 @@ export default function App() {
         </div>
       </main>
 
-      <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
+      {/* Empty bottom safe area — room for future on-screen buttons */}
+      <div className="safe-bottom shrink-0 h-2 bg-transparent" />
     </div>
   );
 }
@@ -232,7 +204,7 @@ function IntroOverlay({ onClose }: { onClose: () => void }) {
           <ol className="list-decimal list-inside space-y-1">
             <li>Draw dark lines on white paper</li>
             <li>Point your camera at the paper</li>
-            <li>Capture & adjust the threshold slider</li>
+            <li>Capture & adjust threshold and line thickness</li>
             <li>Walk and jump on your hand-drawn world</li>
           </ol>
         </div>
